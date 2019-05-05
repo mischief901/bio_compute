@@ -4,7 +4,7 @@ from numpy import random
 from copy import deepcopy
 import sim_toolbox as stb
 
-
+##testing editing with teletype/atom
 ## Stolen from sim.py
 # Stuff all of the fundamental constants and commonly used parameters into a
 # class. Any instance of this class will thus have all the constants.
@@ -28,26 +28,26 @@ class Params(object):
     self.KmNK_Na = 12.0  # NaKATPase enzyme ext Na half-max sat value
     self.KmNK_K = 0.2  # NaKATPase enzyme ext K half-max sat value
     self.KmNK_ATP = 0.5  # NaKATPase enzyme ATP half-max sat value
-    
+
     self.cell_r = 5.0e-6  # radius of single cell
     self.gj_len = 100e-9  # distance between two GJ connected cells [m]
     self.cell_sa = (4 * math.pi * self.cell_r ** 2)  # cell surface area
     self.cell_vol = ((4 / 3) * math.pi * self.cell_r ** 3)  # cell volume
-    
+
     # Simulation control.
     self.sim_dump_interval=10
     self.sim_long_dump_interval=100
-    
+
     # Numerical-integration parameters. These place a limit on how much
     # any cell's Vmem, or any ion concentration, can change in one timestep.
     self.sim_integ_max_delt_Vm = .0001      # Volts/step
     # .001 means that no [ion] can change by more than .1% in one timestep.
     self.sim_integ_max_delt_cc = .001
     self.adaptive_timestep = True   # So that the params above get used.
-    
+
     ###JJJ My new neutral ion "A"
     self.concA_fixed_amount = 100   # moles/m3
-    
+
 class Planaria(Params) :
   """
   The Planaria class is a subclass of the Params class in sim.py. The
@@ -59,13 +59,13 @@ class Planaria(Params) :
   num_cells = 5
   cell_r_range = None
   gj_len_range = None
-  
+
   def __init__(self) :
 
     ## Initialize the constants and other parameters that are not changed by
     ## calling the super class (Params) from sim.py
     Params.__init__(self)
-    
+
     self.cell_r = get_random(self.cell_r_range)
     self.gj_len = get_random(self.gj_len_range)
     ## Recalculate the surface area and volume
@@ -73,7 +73,7 @@ class Planaria(Params) :
     self.cell_vol = ((4 / 3) * math.pi * self.cell_r ** 3)  # cell volume
 
     self._init_big_arrays(['M'])
-    
+
   def _init_big_arrays(self, extra_ions=[]):
     """Stolen from sim.py, changed heavily to use as class method."""
     global cc_cells, cc_env, Dm_array, z_array, ion_i,Vm, \
@@ -82,7 +82,7 @@ class Planaria(Params) :
 
     # ion properties (Name, base membrane diffusion [m2/s], valence
     #   initial concentration inside cell [mol/m3],
-    #   fixed concentration outside cell [mol/m3], 
+    #   fixed concentration outside cell [mol/m3],
     # These are temporary structures. We use them to provide initial values for
     # the big arrays we are about to build, and to specify the order of which
     # row represents which ion in those arrays.
@@ -131,7 +131,7 @@ class Planaria(Params) :
     decay_cells = np.zeros ((n_ions))
 
   def _
-    
+
   def do_mutation(self) :
     """Performs a point-wise mutation of a parameter in the planaria.
     The parameter that is mutated is randomly chosen. The value of the parameter
@@ -150,25 +150,25 @@ class Planaria(Params) :
 
   def do_crossover(self, other_planaria) :
     """Performs a crossover mutation between this planaria and another planaria.
-    A random set of parameters are used to generate 2 new Planaria classes one 
+    A random set of parameters are used to generate 2 new Planaria classes one
     for each of the resulting children.
     """
     random_params = self._get_random_params()
     child1, child2 = deepcopy(self), deepcopy(other_planaria)
     for param in random_params :
       setattr(child1, param, getattr(other_planaria, param))
-      setattr(child2, param, getattr(self, param))      
+      setattr(child2, param, getattr(self, param))
     return child1, child2
 
-  
+
   def run(self, time_steps) :
     """Runs the model for time_steps number of iterations. Calculates and returns
     the fitness selection metric.
     """
-    
+
     pass
 
-  
+
   def fitness(self) :
     """Calculates the fitness selection metrics from the last run of the planaria.
     """
@@ -177,7 +177,7 @@ class Planaria(Params) :
     for self.
     pass
 
-  
+
   def _get_random_param(self) :
     """Chooses random parameters from the Planaria class. Returned as a list.
     """
@@ -188,7 +188,7 @@ class Planaria(Params) :
       choices.append(choice)
     return choices
 
-  
+
 def get_random(parameter_range) :
   """Takes in a tuple of (minimum, maximum) or a single value. If a single value
   is given, the return is a random number between 1 and the value. Otherwise,
@@ -213,49 +213,49 @@ class Evolve(object) :
       planaria.append(Planaria())
     self.planaria = planaria
     self._open_graph()
-    
+
 
   def start(self, epochs, steps_per_mutation) :
     """Starts the evolution.
     epochs is the total number of rounds of the algorithm to take.
-    steps_per_mutation is the number of steps to take before applying selection 
+    steps_per_mutation is the number of steps to take before applying selection
     criteria.
     """
     fitness = []
     for planaria in self.planaria :
       fit = planaria.run(steps_per_mutation)
       fitness.append(fit)
-      
+
     self._update_graph()
-      
+
     pass
 
-  
+
   def _apply_mutations(self) :
     """Chooses one or two planaria to undergo mutations.
     """
     pass
 
-  
+
   def _cull_planaria(self) :
     """Gets and ranks the planaria by the selection criteria.
     The worst performing planaria are culled and replaced with cross-over mutations.
     """
     pass
 
-  
+
   def _open_graph(self) :
     """Sets up and opens the window to graph the evolving lifecycle of the planaria.
     Speculatively using pygame to display the window.
     """
     pass
 
-  
+
   def _update_graph(self) :
     """Updates the graph with new information.
     """
     pass
-  
+
 
 
 
@@ -272,7 +272,7 @@ def sim_slopes (t, cc_cells, p):
     global cc_env, Dm_array, z_array, ion_i, Vm, gj_connects, GP, \
            gen_cells, gen_magic, decay_cells
     GP = p
-    
+
     num_cells = cc_cells.shape[1]
     Vm = compute_Vm (cc_cells, GP)
 
