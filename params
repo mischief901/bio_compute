@@ -1,0 +1,58 @@
+Worm Parameters:
+
+# Don't Change:
+Hill Model Parameters:
+kM: 
+N: 
+scale: 
+
+# Don't Change:
+num_cells: number of cells
+n_GJs: number of gap junctions
+
+
+# Constant:
+cc_env for External ion concentrations
+
+# See Ion Concentrations:
+cc_cells for internal ion concentrations
+
+
+# Look into further.
+Ligand creation/decay/gating?
+
+# Change these:
+Ion Channel Diffusion Coefficients
+GJ_diffusion: Ion diffusion rate through the gap junctions
+cell_r: Cell radius
+gj_len: Gap Junction Length
+# Also randomize on init:
+Ion Concentrations:
+'M' : The secret molecule
+'Na'
+'K'
+'Cl'
+'P'
+
+How to judge living cells:
+Vmem: Range of values for liveness. (0 = dead cell - 1)
+      Vmem mapping of 0V = Tail, 1V = Head
+      Difference between head and tail (magnitude)
+      
+
+Mutation:
+        - Point-wise mutation of a randomly chosen parameter.
+        - Multiply by a random scale factor [e.g. 0.5 - 2]
+
+Crossover:
+        - Randomly choose 2 planaria and a parameter to switch
+        - Switch parameter(s)
+
+Cull Planaria:
+     - If a planaria is 'dead' for more than 2-3 rounds, force repopulation.
+     - Cull a certain fixed percentage of the cells, ranked by the selection method.
+     - When a planaria is culled, replace it with the crossover copy of 2 random planaria.
+
+If all die, restart from beginning.
+
+
