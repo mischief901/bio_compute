@@ -530,6 +530,9 @@ class Planaria(Params) :
     A random set of parameters are used to generate 2 new Planaria classes one
     for each of the resulting children.
     """
+
+
+
     random_params = self._get_random_params()
     child1, child2 = deepcopy(self), deepcopy(other_planaria)
     for param in random_params :
@@ -601,7 +604,7 @@ class Evolve(object) :
       if p.n_cells > self.max_cells :
         self.max_cells = p.n_cells
         
-    self.planaria = planaria
+    self.planaria_list = planaria
     ## Open and initialize the graph.
     self._init_graph()
 
@@ -624,6 +627,14 @@ class Evolve(object) :
       
       self._cull_planaria()
       
+  def reproduce(self,planaria_rank_list):
+    
+
+  
+
+
+
+
 
   def _apply_mutation(self) :
     """Chooses one or two planaria to undergo mutations.
@@ -635,6 +646,21 @@ class Evolve(object) :
     """Gets and ranks the planaria by the selection criteria.
     The worst performing planaria are culled and replaced with cross-over mutations.
     """
+    planaria_rank_list = []
+    for i,planaria in enumerate(self.planaria):
+        planaria_rank_list.append(i,planaria)
+
+    
+    planaria_rank_list.sort(key=lambda x: x[1])
+    n = (len(planaria_rank_list))/2
+    planaria_rank_list = planaria_rank_list[n:]
+
+
+
+
+
+
+
     pass
 
 
