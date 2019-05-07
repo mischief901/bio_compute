@@ -617,11 +617,11 @@ class Board :
     """Resizes the graph to the new number of rows and cols.
     Zeros are used in all new entries. The figure can only grow in size.
     """
-    if rows => self.rows and cols => self.cols :
+    if rows >= self.rows and cols >= self.cols :
       new_board = np.zeros((cols, rows))
       for c in range(self.cols) :
         for r in range(self.rows) :
-        new_board[c][r] = self.board[c][r]
+          new_board[c][r] = self.board[c][r]
       self.board = new_board
       self.ax.pcolormesh(self.board, **self.opts)
       plt.pause(0.001)
