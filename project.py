@@ -5,6 +5,7 @@ import edebug as edb
 from numpy import random
 from copy import deepcopy
 import sim_toolbox as stb
+from scipy import integrate
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
@@ -63,7 +64,7 @@ class Planaria(Params) :
   for creating random mutations and crossovers.
   """
   ## A class variable to identify which parameters are modifiable by the algo.
-  params = ['cell_r', 'gj_len', 'num_cells', 'kM', 'N', 'scale']
+  params = ['cell_r', 'gj_len', 'n_cells', 'kM', 'N', 'scale', 'cell_grow']
   cell_r_range = (2e-6, 1e-5)
   gj_len_range = (50e-9, 100e-8)
   num_cells_range = (2, 5)
@@ -378,8 +379,8 @@ class Planaria(Params) :
     def wrap (t, y):
       #global cc_cells
       print ('----------------\nt={:.9g}'.format(t))
-      slew_cc = sim_slopes (t, y.reshape(num_ions,num_cells)) # moles/(m3*s)
-      slew_cc = slew_cc.reshape (num_ions*num_cells)
+      slew_cc = self.sim_slopes(t)#, y.reshape(num_ions, num_cells)) # moles/(m3*s)
+      slew_cc = slew_cc.reshape(num_ions*num_cells)
       np.set_printoptions (formatter={'float':'{:6.2f}'.format},linewidth=120)
       print ('y={}'.format(y))
       np.set_printoptions (formatter={'float':'{:7.2g}'.format},linewidth=120)
@@ -396,7 +397,7 @@ class Planaria(Params) :
 
     # run the simulation loop:
     y0 = self.cc_cells.reshape(num_ions*num_cells)
-    bunch = scipy.integrate.solve_ivp(wrap, (0,end_time), y0, method='BDF', \
+    bunch = scipy.integrate.solve_ivp(wrap, (0, end_time), y0, method='BDF', \
                                       t_eval=t_eval)
 
     print ('{} func evals, status={} ({}), success={}'.format \
@@ -517,6 +518,11 @@ class Planaria(Params) :
     random_params = self._get_random_params()
     for param in random_params :
       factor = get_random((0.5, 2))
+      if param =='cell_grow' :
+        print("Growing")
+        x = getattr(self, 'n_cells')
+        setattr(self, 'n_cells', x + 1)
+        return
       x = getattr(self, param)
       setattr(self, param, x * factor)
       if param == 'cell_r' :
@@ -531,11 +537,11 @@ class Planaria(Params) :
     for each of the resulting children.
     """
 
-
-
     random_params = self._get_random_params()
     child1, child2 = deepcopy(self), deepcopy(other_planaria)
     for param in random_params :
+      if param == 'cell_grow' or param == 'n_cells':
+        continue
       setattr(child1, param, getattr(other_planaria, param))
       setattr(child2, param, getattr(self, param))
       if param =='cell_r' :
@@ -543,7 +549,7 @@ class Planaria(Params) :
         child1.cell_sa = (4 * math.pi * child1.cell_r ** 2)  # cell surface area
         child1.cell_vol = ((4 / 3) * math.pi * child1.cell_r ** 3)  # cell volume
         child2.cell_sa = (4 * math.pi * child2.cell_r ** 2)  # cell surface area
-        chidl2.cell_vol = ((4 / 3) * math.pi * child2.cell_r ** 3)  # cell volume
+        child2.cell_vol = ((4 / 3) * math.pi * child2.cell_r ** 3)  # cell volume
         
     return child1, child2
 
@@ -553,18 +559,21 @@ class Planaria(Params) :
     the fitness selection metric.
     """
     self.t_shots, self.cc_shots = self.sim(time_steps)
-    vm = self.compute_Vm()
-    return vm
+    self.vm = self.compute_Vm()
+    return self.vm
 
   def fitness(self) :
     """Calculates the fitness selection metrics from the last run of the planaria.
     """
     ## Get the Vmem difference between each adjacent cell in the planaria
     ## Return the max_diff of the planaria
-    pass
+    min_vmem = min(self.vm)
+    max_vmem = max(self.vm)
+    
+    return abs(min_vmem - max_vmem)
 
 
-  def _get_random_param(self) :
+  def _get_random_params(self) :
     """Chooses random parameters from the Planaria class. Returned as a list.
     """
     num = random.randint(1, len(self.params))
@@ -617,58 +626,67 @@ class Evolve(object) :
     while(epochs > 0) :
       ## Perform one step.
       epochs -= 1
-      data_list = []
       ## Update the graph after each planaria is run for steps_per_mutation time.
-      for index, planaria in enumerate(self.planaria) :
+      for index, planaria in enumerate(self.planaria_list) :
+        if planaria.n_cells > self.max_cells :
+          self.max_cells = planaria.n_cells
+          self._resize_graph(self.max_cells)
+        
         data = planaria.run(steps_per_mutation)
         print(data)
         self._update_graph(index, data)
-      self._show_graph()
+        self._show_graph()
+
+      good, bad = self._cull_planaria()
+      self._reproduce(good, bad)
+      self._apply_mutation()
       
-      self._cull_planaria()
+
+  def _reproduce(self, good_list, bad_list) :
+    while len(bad_list) > 1:
+      choices = len(good_list)
+      [i1, i2] = random.choice(choices, 2)
+      plan1 = self.planaria_list[good_list[i1][0]]
+      plan2 = self.planaria_list[good_list[i2][0]]
+
+      c1, c2 = plan1.do_crossover(plan2)
+
+      [b1, b2] = bad_list[:2]
+      bad_list= bad_list[2:]
+      self.planaria_list[b1[0]] = c1
+      self.planaria_list[b2[0]] = c2
       
-  def reproduce(self,planaria_rank_list):
-    
-
-  
-
-
-
-
-
+      
   def _apply_mutation(self) :
-    """Chooses one or two planaria to undergo mutations.
+    """Choose a random number of planaria to undergo mutations.
     """
-    pass
-
+    n = random.randint(self.num_of_planaria)
+    choices = random.choice(self.planaria_list, n)
+    for mut in choices :
+      mut.do_mutation()
+      
 
   def _cull_planaria(self) :
     """Gets and ranks the planaria by the selection criteria.
     The worst performing planaria are culled and replaced with cross-over mutations.
     """
     planaria_rank_list = []
-    for i,planaria in enumerate(self.planaria):
-        planaria_rank_list.append(i,planaria)
-
+    for i, planaria in enumerate(self.planaria_list):
+      planaria_fit = planaria.fitness()
+      planaria_rank_list.append((i, planaria_fit))
     
     planaria_rank_list.sort(key=lambda x: x[1])
-    n = (len(planaria_rank_list))/2
-    planaria_rank_list = planaria_rank_list[n:]
-
-
-
-
-
-
-
-    pass
-
+    n = (len(planaria_rank_list))//2
+    good_list = planaria_rank_list[n:]
+    bad_list = planaria_rank_list[:n]
+    return (good_list, bad_list)
+    
 
   def _init_graph(self) :
     """Sets up and opens the window to graph the evolving lifecycle of the planaria.
     Creates an instance of the Board class.
     """
-    self.graph = Board(self.max_cells, self.num_of_planaria)
+    self.graph = Board(self.num_of_planaria, self.max_cells)
 
 
   def _update_graph(self, row, data) :
@@ -678,10 +696,13 @@ class Evolve(object) :
 
   def _show_graph(self) :
     self.graph.show_graph()
+
+  def _resize_graph(self, row) :
+    self.graph.resize_graph(int(row))
     
 
 class Board(object) :
-  def __init__(self, max_cols, max_rows) :
+  def __init__(self, max_rows, max_cols) :
     """Initializes the board to the given number of rows and columns.
     Rows corresponds to the maximum number of cells in any Planaria.
     Columns correspons to the number of Planaria to plot.
@@ -691,43 +712,48 @@ class Board(object) :
     self.board = np.zeros((max_rows, max_cols))
     plt.ion()
 
-    colors = mcolors.Normalize(vmin=-.1, vmax=.1)
+    colors = mcolors.Normalize(vmin=-.1, vmax=0)
     
     self.opts = {'rasterized':True, 'cmap':'viridis', 'norm':colors}
-    self.figure, self.ax = plt.subplots(figsize=(4,4))
+    self.figure, self.ax = plt.subplots()
     self.mat = self.ax.pcolormesh(self.board, **self.opts)
     self.figure.colorbar(self.mat, ax=self.ax)
+    self.ax.set_autoscalex_on(True)
     plt.pause(0.001)
     
   def update_row(self, row, data) :
     """Updates a single row in the graph to the supplied data.
     Data must be an array of values.
     """
-    if len(data) < self.rows :
-      new_arr = np.zeros(self.rows)
+    if len(data) < self.cols :
+      new_arr = np.zeros(self.cols)
       for i, d in enumerate(data) :
         new_arr[i] = d
       data = new_arr
     data = np.asarray(data)
-    self.board[row] = data[0]
+    for i in range(self.cols) :
+      self.board[row][i] = data[i]
 
   def show_graph(self) :
     self.mat = self.ax.pcolormesh(self.board, **self.opts)
     plt.pause(0.001)
 
-  def resize_figure(self, cols, rows) :
+  def resize_graph(self, cols) :
     """Resizes the graph to the new number of rows and cols.
     Zeros are used in all new entries. The figure can only grow in size.
     """
     ## These rows and columns may be messed up.
-    if rows >= self.rows and cols >= self.cols :
-      new_board = np.zeros((cols, rows))
+    #if rows >= self.rows and cols >= self.cols :
+    new_board = np.zeros((self.rows, cols))
+    print(new_board.shape)
+    print(self.board.shape)
+    for r in range(self.rows) :
       for c in range(self.cols) :
-        for r in range(self.rows) :
-          new_board[c][r] = self.board[c][r]
-      self.board = new_board
-      self.ax.pcolormesh(self.board, **self.opts)
-      plt.pause(0.001)
+        new_board[r][c] = self.board[r][c]
+    self.board = new_board
+    self.cols = cols
+    self.ax.pcolormesh(self.board, **self.opts)
+    plt.pause(0.001)
       
       
 def main(epochs, steps_per_epoch, number_of_planaria) :
@@ -739,9 +765,9 @@ if __name__ == "__main__" :
   import sys
   args = sys.argv
   if len(args) == 4:
-    epochs = args[1]
-    steps_per_epoch = args[2]
-    number_of_planaria = args[3]
+    epochs = int(args[1])
+    steps_per_epoch = int(args[2])
+    number_of_planaria = int(args[3])
   else :
     epochs = 10
     steps_per_epoch = 10

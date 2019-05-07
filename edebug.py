@@ -62,7 +62,7 @@ Vnernst (p):
 import numpy as np
 import operator
 import sim_toolbox as stb
-import sim as sim
+#import sim as sim
 
 # The treatment of ion valence is arguably misleading:
 # - When we print per-ion numbers, we are really always printing amounts of
