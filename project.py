@@ -1,5 +1,7 @@
 import math
+import operator
 import numpy as np
+import edebug as edb
 from numpy import random
 from copy import deepcopy
 import sim_toolbox as stb
@@ -15,6 +17,7 @@ class Params(object):
   """Stolen from sim.py. Expanded in this file.
   """
   def __init__(self):
+    self.post_hook_func = None
     self.F = 96485  # Faraday constant [C/mol]
     self.R = 8.314  # Gas constant [J/K*mol]
     self.eo = 8.854e-12  # permittivity of free space [F/m]
@@ -61,72 +64,81 @@ class Planaria(Params) :
   """
   ## A class variable to identify which parameters are modifiable by the algo.
   params = ['cell_r', 'gj_len', 'num_cells', 'kM', 'N', 'scale']
-  cell_r_range = None
-  gj_len_range = None
-  num_cells_range = None
-  kM_range = None
-  N_range = None
-  scale_range = None
+  cell_r_range = (2e-6, 1e-5)
+  gj_len_range = (50e-9, 100e-8)
+  num_cells_range = (2, 5)
+  kM_range = (0.2, 2)
+  N_range = (1, 20)
+  scale_range = (0.1, 0.5)
 
   def __init__(self) :
 
     ## Initialize the constants and other parameters that are not changed by
     ## calling the super class (Params) from sim.py
     Params.__init__(self)
-    self.num_cells = np.random.randint(5)
-    self.n_GJs = self.num_cells - 1
+    self.n_cells = np.random.randint(*self.num_cells_range)
+    self.n_GJs = self.n_cells - 1
+    print(self.n_cells)
+    print(self.n_GJs)
+    
     self.cell_r = get_random(self.cell_r_range)
     self.gj_len = get_random(self.gj_len_range)
     ## Recalculate the surface area and volume
     self.cell_sa = (4 * math.pi * self.cell_r ** 2)  # cell surface area
     self.cell_vol = ((4 / 3) * math.pi * self.cell_r ** 3)  # cell volume
 
+    self.kM = get_random(self.kM_range)
+    self.N = get_random(self.N_range)
+    self.scale = get_random(self.scale_range)
+    
     self._init_big_arrays(['M'])
     
-    Na = self.ion_i['Na']
-    K = self.ion_i['K']
-    Cl = self.ion_i['Cl']
-    P = self.ion_i['P']
-    M = self.ion_i['M']
+    self.Na = self.ion_i['Na']
+    self.K = self.ion_i['K']
+    self.Cl = self.ion_i['Cl']
+    self.P = self.ion_i['P']
+    self.M = self.ion_i['M']
 
-    fb_cells = [0, num_cells - 1]
+    fb_cells = [0, self.n_cells - 1]
     self.Dm_array[self.K, fb_cells] = 1.7e-17
     self.Dm_array[:, 1:-1] = 0
     
     for i in fb_cells :
-      self.ion_magic[self.K, i] = self.magic_Hill_inv(M, self.N, self.kM, i)
+      self.ion_magic[self.K, i] = self.magic_Hill_inv(self.M, self.N, self.kM, i)
 
     self.gj_connects['from'] = range(self.n_GJs)
     self.gj_connects['to'] = self.gj_connects['from'] + 1
     self.gj_connects['scale'] = self.scale
 
-    self.z_array[M] = -1
-    self.GJ_diffusion[M] = 1e-18
+    self.z_array[self.M] = -1
+    self.GJ_diffusion[self.M] = 1e-18
 
-    self.cc_env[Na] = 145
-    self.cc_cells[K] = 5
-    self.cc_env[P] = 10
-    self.cc_env[Cl] = 140
+    self.cc_env[self.Na] = 145
+    self.cc_cells[self.K] = 5
+    self.cc_env[self.P] = 10
+    self.cc_env[self.Cl] = 140
     
-    self.cc_cells[Na] = 12
-    self.cc_cells[K] = 139
-    self.cc_cells[P] = 135
-    self.cc_cells[Cl] = 15
+    self.cc_cells[self.Na] = 12
+    self.cc_cells[self.K] = 139
+    self.cc_cells[self.P] = 135
+    self.cc_cells[self.Cl] = 15
 
     spread = 1
-    spread = np.linspace(spread, -spread, self.num_cells)
-    self.cc_cells[M, :] = 1 + spread
-    self.cc_cells[Na, :] += spread
+    spread = np.linspace(spread, -spread, self.n_cells)
+    self.cc_cells[self.M, :] = 1 + spread
+    self.cc_cells[self.Na, :] += spread
 
     self.gj_len = 15e-9
 
-    self.GJ_diffusion[Na] = 1.33e-17
-    self.GJ_diffusion[K] = 1.96e-17
-    self.GJ_diffusion[M] = 1e-14
-    self.GJ_diffusion[P] = 0
+    self.GJ_diffusion[self.Na] = 1.33e-17
+    self.GJ_diffusion[self.K] = 1.96e-17
+    self.GJ_diffusion[self.M] = 1e-14
+    self.GJ_diffusion[self.P] = 0
     
-    
+    self.Vm = self.compute_Vm()
+    print(self.Vm)
 
+    
   def _init_big_arrays(self, extra_ions=[]):
     """Stolen from sim.py, adapted to use as class method."""
     # ion properties (Name, base membrane diffusion [m2/s], valence
@@ -150,8 +162,8 @@ class Planaria(Params) :
                          'z':0, 'c_in':0,  'c_out':0})
     n_ions = len(ions_vect)
 
-    self.cc_cells = np.empty((n_ions, n_cells))
-    self.Dm_array = np.empty((n_ions, n_cells))
+    self.cc_cells = np.empty((n_ions, self.n_cells))
+    self.Dm_array = np.empty((n_ions, self.n_cells))
     self.z_array  = np.empty((n_ions))
     self.cc_env   = np.empty((n_ions))
     self.GJ_diffusion = np.empty((n_ions))
@@ -170,13 +182,13 @@ class Planaria(Params) :
     # Initialize the magic arrays to their default no-magic state.
     magic_dtype=np.dtype ([('type','i4'),('kM','f4'), ('N','f4'), \
                            ('cell','i4'), ('ion','i4'), ('cell2','i4')])
-    self.ion_magic = np.zeros ((n_ions, n_cells), dtype=magic_dtype)
-    self.GJ_magic  = np.zeros ((n_GJs), dtype=magic_dtype)
-    self.gen_magic = np.zeros ((n_ions, n_cells), dtype=magic_dtype)
+    self.ion_magic = np.zeros ((n_ions, self.n_cells), dtype=magic_dtype)
+    self.GJ_magic  = np.zeros ((self.n_GJs), dtype=magic_dtype)
+    self.gen_magic = np.zeros ((n_ions, self.n_cells), dtype=magic_dtype)
 
     # Create default arrays for GJs, and for generation, decay rates.
-    self.gj_connects=np.zeros((n_GJs), dtype=[('from','i4'),('to','i4'),('scale','f4')])
-    self.gen_cells   = np.zeros ((n_ions, n_cells))
+    self.gj_connects=np.zeros((self.n_GJs), dtype=[('from','i4'),('to','i4'),('scale','f4')])
+    self.gen_cells   = np.zeros ((n_ions, self.n_cells))
     self.decay_cells = np.zeros ((n_ions))
 
 
@@ -191,11 +203,10 @@ class Planaria(Params) :
   # not needed outside of sim.py. However, the solve() functions in main.py call
   # sim_slopes() directly -- sim_slopes() == vector of zeroes indicates steady
   # state.
-  def sim_slopes(self, t, cc_cells, p):
-    self.GP = p
+  def sim_slopes(self, t):
 
-    num_cells = cc_cells.shape[1]
-    self.Vm = compute_Vm(cc_cells, self.GP)
+    num_cells = self.cc_cells.shape[1]
+    self.Vm = self.compute_Vm()
 
     # General note: our units of flux are moles/(m2*s). The question: m2 of
     # what area? You might think that for, e.g., ion channels, it should be per
@@ -203,40 +214,40 @@ class Planaria(Params) :
     # membrane area. Thus, the (e.g.,) diffusion rate through ion channels must
     # be scaled down by the fraction of membrane area occupied by channels.
     # The same goes for ion pumps and GJs.
-    slew_cc = np.zeros (cc_cells.shape) # Per-ion cell fluxes
+    slew_cc = np.zeros (self.cc_cells.shape) # Per-ion cell fluxes
 
     # Run the Na/K-ATPase ion pump in each cell.
     # Returns two 1D arrays[N_CELLS] of fluxes; units are moles/(m2*s)
-    f_Na, f_K, _ = stb.pumpNaKATP(cc_cells[self.ion_i['Na']],
+    f_Na, f_K, _ = stb.pumpNaKATP(self.cc_cells[self.ion_i['Na']],
                                   self.cc_env[self.ion_i['Na']],
-                                  cc_cells[self.ion_i['K']],
+                                  self.cc_cells[self.ion_i['K']],
                                   self.cc_env[self.ion_i['K']],
                                   self.Vm,
-                                  self.GP.T,
-                                  self.GP,
+                                  self.T,
+                                  self,
                                   1.0)
 
     # Kill the pumps on worm-interior cells (based on Dm=0 for all ions)
     keep_pumps = np.any (self.Dm_array>0, 0) # array[n_cells]
-    pump_Na *= keep_pumps
-    pump_K  *= keep_pumps
+    f_Na *= keep_pumps
+    f_K  *= keep_pumps
 
     # Update the cell-interior [Na] and [K] after pumping (assume env is too big
     # to change its concentration).
-    slew_cc[ion_i['Na']] = pump_Na
-    slew_cc[ion_i['K']]  = pump_K
+    slew_cc[self.ion_i['Na']] = f_Na
+    slew_cc[self.ion_i['K']]  = f_K
 
     # Get the gap-junction Thevenin-equivalent circuits for all ions at once.
     # We get two arrays of [n_ions,n_GJs].
     # Units of Ith are mol/(m2*s); units of Gth are mol/(m2*s) per Volt.
-    (GJ_Ith, GJ_Gth) = GJ_norton(self.GP)
+    (GJ_Ith, GJ_Gth) = self.GJ_norton()
 
     # for each ion: (sorted to be in order 0,1,2,... rather than random)
-    for ion_name,ion_index in sorted (ion_i.items(),key=operator.itemgetter(1)):
+    for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
       # GHK flux across membranes into the cell
       # It returns array[N_CELLS] of moles/(m2*s)
-        f_ED = GHK(ion_index, self.Vm)
-        f_ED *= eval_magic(ion_magic[ion_index,:])
+        f_ED = self.GHK(ion_index)
+        f_ED *= self.eval_magic(self.ion_magic[ion_index,:])
         slew_cc[ion_index] += f_ED
 
     # Gap-junction computations. Note the units of the Thevenin-equivalent
@@ -245,33 +256,33 @@ class Planaria(Params) :
     deltaV_GJ = (self.Vm[self.gj_connects['to']] - self.Vm[self.gj_connects['from']])
     f_gj = GJ_Ith + deltaV_GJ*GJ_Gth
 
-    magic = eval_magic(GJ_magic)
+    magic = self.eval_magic(self.GJ_magic)
     f_gj *= magic
 
     # Update cells with gj flux:
     # Note that the simple slew_cc[ion_index, gj_connects['to']] += f_gj
     # doesn't actually work in the case of two GJs driving the same 'to'
     # cell. Instead, we use np.add.at().
-    for ion_name,ion_index in sorted (ion_i.items(),key=operator.itemgetter(1)):
-        np.add.at (slew_cc[ion_index,:], self.gj_connects['from'], -f_gj[ion_index])
-        np.add.at (slew_cc[ion_index,:], self.gj_connects['to'],    f_gj[ion_index])
+    for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
+        np.add.at(slew_cc[ion_index,:], self.gj_connects['from'], -f_gj[ion_index])
+        np.add.at(slew_cc[ion_index,:], self.gj_connects['to'],    f_gj[ion_index])
 
     # The current slew_cc units are moles/(m2*s), where the m2 is m2 of
     # cell-membrane area. To convert to moles/s entering the cell, we multiply
     # by the cell's surface area. Then, to convert to moles/m3 per s entering
     # the cell, we divide by the cell volume.
-    slew_cc *= (self.GP.cell_sa / self.GP.cell_vol)
+    slew_cc *= (self.cell_sa / self.cell_vol)
 
     # Next, do generation and decay.
-    for ion_name,ion_index in sorted (ion_i.items(),key=operator.itemgetter(1)):
-      gen = self.gen_cells[ion_index,:] * eval_magic(self.gen_magic[ion_index,:])
-      decay = cc_cells[ion_index,:] * self.decay_cells[ion_index]
+    for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
+      gen = self.gen_cells[ion_index,:] * self.eval_magic(self.gen_magic[ion_index,:])
+      decay = self.cc_cells[ion_index,:] * self.decay_cells[ion_index]
       slew_cc[ion_index] += gen - decay
 
     if (self.post_hook_func != None):
-      self.post_hook_func(t, self.GP, cc_cells, slew_cc)
+      self.post_hook_func(t, self, cc_cells, slew_cc)
 
-    return (slew_cc)    # Moles/m3 per second.
+    return slew_cc    # Moles/m3 per second.
 
 # Given: per-cell, per-ion charges in moles/m3.
 # First: sum them per-cell, scaled by valence to get "signed-moles/m3"
@@ -279,25 +290,25 @@ class Planaria(Params) :
 # surface area to get coulombs/m2, and finally divide by Farads/m2.
 # The final scaling factor is F * p.cell_vol / (p.cell_sa*p.cm),
 # or about 3200 mV per (mol/m3)
-  def compute_Vm(self, cc_cells, p):
+  def compute_Vm(self):
       # Calculate Vmem from scratch via the charge in the cells.
-    rho_cells = (cc_cells * self.z_array[:,np.newaxis]).sum(axis=0) * p.F
-    return (rho_cells * p.cell_vol / (p.cell_sa*p.cm))
+    rho_cells = (self.cc_cells * self.z_array[:,np.newaxis]).sum(axis=0) * self.F
+    return (rho_cells * self.cell_vol / (self.cell_sa*self.cm))
 
-  def GHK(self, cc_cells, ion_index, Vm):
-    num_cells = cc_cells.shape[1]
+  def GHK(self, ion_index):
+    num_cells = self.cc_cells.shape[1]
     f_ED = stb.electroflux(self.cc_env[ion_index] * np.ones(num_cells),
                            self.cc_cells[ion_index],
                            self.Dm_array[ion_index],
-                           GP.tm * np.ones(num_cells),
+                           self.tm * np.ones(num_cells),
                            self.z_array[ion_index] * np.ones(num_cells),
-                           Vm,
-                           self.GP.T,
-                           self.GP,
+                           self.Vm,
+                           self.T,
+                           self,
                            rho=np.ones(num_cells))
     return (f_ED)
 
-  def sim(self, end_time, p):
+  def sim(self, end_time):
     # Save snapshots of core variables for plotting.
     t_shots=[]; cc_shots=[]; last_shot=-100;
     
@@ -305,7 +316,7 @@ class Planaria(Params) :
     i=0; t=0
     time_step = .005
     while (t < end_time):
-      slew_cc = sim_slopes(t, self.cc_cells)
+      slew_cc = self.sim_slopes(t)
       
       # Compute Vmem slew (in Volts/s). Essentially, it's just slew_Q/C.
       # Slew_cc is slew-flux in moles/m3 per second. We first convert to
@@ -313,16 +324,16 @@ class Planaria(Params) :
       # Then sum (slew-moles * valence) to get a "slew signed moles."
       # Finally, multiply by F to get slew-Coulombs/(m2*s), and divide by
       # cap/m2 to get slew-Vmem/s.
-      mult = (p.cell_vol / p.cell_sa) * (p.F/ p.cm)
+      mult = (self.cell_vol / self.cell_sa) * (self.F/ self.cm)
       slew_Vm = (slew_cc * self.z_array[:,np.newaxis]).sum(axis=0) * mult
       
       # Timestep control.
       # max_volts / (volts/sec) => max_time
-      max_t_Vm = p.sim_integ_max_delt_Vm / (np.absolute (slew_Vm).max())
+      max_t_Vm = self.sim_integ_max_delt_Vm / (np.absolute (slew_Vm).max())
       # (moles/m3*sec) / (moles/m3) => fractional_change / sec
-      if (p.adaptive_timestep):
+      if (self.adaptive_timestep):
         frac_cc = np.absolute(slew_cc)/(self.cc_cells+.00001)
-        max_t_cc = p.sim_integ_max_delt_cc / (frac_cc.max())
+        max_t_cc = self.sim_integ_max_delt_cc / (frac_cc.max())
         n_steps = max (1, int (min (max_t_Vm, max_t_cc) / time_step))
         #print ('At t={}: max_t_Vm={}, max_t_cc={} => {} steps'.format(t, max_t_Vm, max_t_cc, n_steps))
         #print ('steps_Vm=', (.001/(time_step*np.absolute (slew_Vm))).astype(int))
@@ -332,25 +343,20 @@ class Planaria(Params) :
       self.cc_cells +=  slew_cc * n_steps * time_step
 
       # Calculate Vmem from scratch via the charge in the cells.
-      self.Vm = compute_Vm (self.cc_cells,p)
+      self.Vm = self.compute_Vm()
 
       # Dump out status occasionally during the simulation.
       # Note that this may be irregular; numerical integration could, e.g.,
       # repeatedly do i += 7; so if sim_dump_interval=10 we would rarely dump!
-      if (i % p.sim_dump_interval == 0):
-        long = (i % p.sim_long_dump_interval == 0)
-        edb.dump (t, self.cc_cells, edb.Units.mV_per_s, long) # mol_per_m2s
+      #if (i % self.sim_dump_interval == 0):
+        #long = (i % self.sim_long_dump_interval == 0)
+        #edb.dump (t, self.cc_cells, edb.Units.mV_per_s, long) # mol_per_m2s
         #edb.analyze_equiv_network (p)
         #edb.dump_magic ()
 
       i += n_steps
       t = i*time_step
 
-      if (t>9000000):         # A hook to stop & debug during a sim.
-        edb.debug_print_GJ (p, self.cc_cells, 1)
-        import pdb; pdb.set_trace()
-        print (sim_slopes (2000, self.cc_cells))
-        
       # Save information for plotting at sample points. Early on (when things
       # are changing quickly) save lots of info. Afterwards, save seldom so
       # as to save memory (say 100 points before & 200 after)
@@ -359,12 +365,12 @@ class Planaria(Params) :
       interval = (before if t<boundary else after)
       if (t > last_shot+interval):
         t_shots.append(t)
-        cc_shots.append(cc_cells.copy())
+        cc_shots.append(self.cc_cells.copy())
         last_shot = t
 
     return (t_shots, cc_shots)
 
-  def sim_implicit (self, end_time, p):
+  def sim_implicit(self, end_time):
     import scipy
     #global cc_cells, Vm
     num_ions, num_cells = self.cc_cells.shape
@@ -383,15 +389,15 @@ class Planaria(Params) :
     # Save information for plotting at sample points. Early on (when things
     # are changing quickly) save lots of info. Afterwards, save seldom so
     # as to save memory. So, 100 points in t=[0,50], then 200 in [50, end_time].
-    boundary=min (50,end_time)
-    t_eval = np.linspace (0,boundary,50,endpoint=False)
+    boundary=min(50,end_time)
+    t_eval = np.linspace(0,boundary,50,endpoint=False)
     if (end_time>50):
-      t_eval = np.append (t_eval, np.linspace (boundary, end_time, 200))
+      t_eval = np.append(t_eval, np.linspace (boundary, end_time, 200))
 
     # run the simulation loop:
-    y0 = self.cc_cells.reshape (num_ions*num_cells)
-    bunch = scipy.integrate.solve_ivp (wrap, (0,end_time), y0, method='BDF', \
-                                       t_eval=t_eval)
+    y0 = self.cc_cells.reshape(num_ions*num_cells)
+    bunch = scipy.integrate.solve_ivp(wrap, (0,end_time), y0, method='BDF', \
+                                      t_eval=t_eval)
 
     print ('{} func evals, status={} ({}), success={}'.format \
            (bunch.nfev, bunch.status, bunch.message, bunch.success))
@@ -407,13 +413,13 @@ class Planaria(Params) :
   # and has units (mol/m2*s)
   # Gth*(Vto-Vfrom) is the drift flux of particles in the from->to direction;
   # Gth has units (mol/m2*s) per Volt.
-  def GJ_norton (self, p):
+  def GJ_norton (self):
     #global cc_cells
     n_GJ = self.gj_connects.size
     n_ions = self.cc_env.size
     
-    GJ_Ith = np.empty ((n_ions, n_GJ))
-    GJ_Gth = np.empty ((n_ions, n_GJ))
+    GJ_Ith = np.empty((n_ions, n_GJ))
+    GJ_Gth = np.empty((n_ions, n_GJ))
 
     # Compute ion drift and diffusion through GJs. Assume fixed GJ spacing
     # of gj_len between connected cells.
@@ -424,8 +430,8 @@ class Planaria(Params) :
     D_scale = self.gj_connects['scale']
     
     for ion_index in range(n_ions):
-      deltaC_GJ = (self.cc_cells[ion_index,GJ_to]-self.cc_cells[ion_index,GJ_from]) \
-        / p.gj_len
+      deltaC_GJ = (self.cc_cells[ion_index,GJ_to] - self.cc_cells[ion_index,GJ_from]) \
+        / self.gj_len
       
       # Assume that ion concentration for any ion is constant within a cell,
       # and then transitions linearly across a GJ. Then c_ave[g] is the conc
@@ -438,8 +444,8 @@ class Planaria(Params) :
       # Finally, electrodiffusive gj flux:
       # f_gj[i] is flux (moles/(m2*s)), in the direction from GJ input to
       # output. Note that D/kT gives the drift mobility.
-      D = self.GJ_diffusion[ion_index] * self.D_scale
-      alpha = (c_avg * p.q * self.z_array[ion_index]) * (D/(p.kb*p.T*p.gj_len))
+      D = self.GJ_diffusion[ion_index] * D_scale
+      alpha = (c_avg * self.q * self.z_array[ion_index]) * (D/(self.kb*self.T*self.gj_len))
       GJ_Ith[ion_index,:] = -D*deltaC_GJ
       GJ_Gth[ion_index,:] = -alpha
 
@@ -496,10 +502,10 @@ class Planaria(Params) :
     
     return (scale)
 
-  def magic_Hill_buf (input_ion, N, kM, input_cell):
+  def magic_Hill_buf (self, input_ion, N, kM, input_cell):
     return ((2, kM, N, input_cell, input_ion, 0))
 
-  def magic_Hill_inv (input_ion, N, kM, input_cell):
+  def magic_Hill_inv (self, input_ion, N, kM, input_cell):
     return ((3, kM, N, input_cell, input_ion, 0))
 
 
@@ -543,9 +549,9 @@ class Planaria(Params) :
     """Runs the model for time_steps number of iterations. Calculates and returns
     the fitness selection metric.
     """
-
-    pass
-
+    self.t_shots, self.cc_shots = self.sim(time_steps)
+    vm = self.compute_Vm()
+    return vm
 
   def fitness(self) :
     """Calculates the fitness selection metrics from the last run of the planaria.
@@ -590,10 +596,10 @@ class Evolve(object) :
     ## Call some initialization functions to set everything up.
     planaria = []
     for _ in range(number_of_planaria) :
-      planaria = Planaria()
-      planaria.append(planaria)
-      if planaria.num_cells > self.max_cells :
-        self.max_cells = planaria.num_cells
+      p = Planaria()
+      planaria.append(p)
+      if p.n_cells > self.max_cells :
+        self.max_cells = p.n_cells
         
     self.planaria = planaria
     ## Open and initialize the graph.
@@ -612,18 +618,20 @@ class Evolve(object) :
       ## Update the graph after each planaria is run for steps_per_mutation time.
       for index, planaria in enumerate(self.planaria) :
         data = planaria.run(steps_per_mutation)
+        print(data)
         self._update_graph(index, data)
+      self._show_graph()
       
       self._cull_planaria()
       
 
-  def _apply_mutation(self, i) :
+  def _apply_mutation(self) :
     """Chooses one or two planaria to undergo mutations.
     """
     pass
 
 
-  def _cull_planaria(self, data) :
+  def _cull_planaria(self) :
     """Gets and ranks the planaria by the selection criteria.
     The worst performing planaria are culled and replaced with cross-over mutations.
     """
@@ -640,7 +648,10 @@ class Evolve(object) :
   def _update_graph(self, row, data) :
     """Updates the graph with new information.
     """
-    self.graph.update_column(row, data)
+    self.graph.update_row(row, data)
+
+  def _show_graph(self) :
+    self.graph.show_graph()
     
 
 class Board(object) :
@@ -652,10 +663,9 @@ class Board(object) :
     self.rows = max_rows
     self.cols = max_cols
     self.board = np.zeros((max_rows, max_cols))
-    print(self.board)
     plt.ion()
 
-    colors = mcolors.Normalize(vmin=0., vmax=1.)
+    colors = mcolors.Normalize(vmin=-.1, vmax=.1)
     
     self.opts = {'rasterized':True, 'cmap':'viridis', 'norm':colors}
     self.figure, self.ax = plt.subplots(figsize=(4,4))
@@ -667,11 +677,15 @@ class Board(object) :
     """Updates a single row in the graph to the supplied data.
     Data must be an array of values.
     """
-    while len(data) < 5 :
-      data.append(0)
+    if len(data) < self.rows :
+      new_arr = np.zeros(self.rows)
+      for i, d in enumerate(data) :
+        new_arr[i] = d
+      data = new_arr
     data = np.asarray(data)
+    self.board[row] = data[0]
 
-    self.board[row] = data
+  def show_graph(self) :
     self.mat = self.ax.pcolormesh(self.board, **self.opts)
     plt.pause(0.001)
 
@@ -692,7 +706,7 @@ class Board(object) :
       
 def main(epochs, steps_per_epoch, number_of_planaria) :
   program = Evolve(number_of_planaria)
-  program.run(epochs, steps_per_epoch)
+  program.start(epochs, steps_per_epoch)
 
   
 if __name__ == "__main__" :
