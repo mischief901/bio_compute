@@ -60,17 +60,21 @@ class Planaria(Params) :
   for creating random mutations and crossovers.
   """
   ## A class variable to identify which parameters are modifiable by the algo.
-  params = ['cell_r', 'gj_len', 'num_cells']
+  params = ['cell_r', 'gj_len', 'num_cells', 'kM', 'N', 'scale']
   cell_r_range = None
   gj_len_range = None
   num_cells_range = None
+  kM_range = None
+  N_range = None
+  scale_range = None
 
   def __init__(self) :
 
     ## Initialize the constants and other parameters that are not changed by
     ## calling the super class (Params) from sim.py
     Params.__init__(self)
-    self.num_cells = 5
+    self.num_cells = np.random.randint(5)
+    self.n_GJs = self.num_cells - 1
     self.cell_r = get_random(self.cell_r_range)
     self.gj_len = get_random(self.gj_len_range)
     ## Recalculate the surface area and volume
@@ -78,6 +82,50 @@ class Planaria(Params) :
     self.cell_vol = ((4 / 3) * math.pi * self.cell_r ** 3)  # cell volume
 
     self._init_big_arrays(['M'])
+    
+    Na = self.ion_i['Na']
+    K = self.ion_i['K']
+    Cl = self.ion_i['Cl']
+    P = self.ion_i['P']
+    M = self.ion_i['M']
+
+    fb_cells = [0, num_cells - 1]
+    self.Dm_array[self.K, fb_cells] = 1.7e-17
+    self.Dm_array[:, 1:-1] = 0
+    
+    for i in fb_cells :
+      self.ion_magic[self.K, i] = self.magic_Hill_inv(M, self.N, self.kM, i)
+
+    self.gj_connects['from'] = range(self.n_GJs)
+    self.gj_connects['to'] = self.gj_connects['from'] + 1
+    self.gj_connects['scale'] = self.scale
+
+    self.z_array[M] = -1
+    self.GJ_diffusion[M] = 1e-18
+
+    self.cc_env[Na] = 145
+    self.cc_cells[K] = 5
+    self.cc_env[P] = 10
+    self.cc_env[Cl] = 140
+    
+    self.cc_cells[Na] = 12
+    self.cc_cells[K] = 139
+    self.cc_cells[P] = 135
+    self.cc_cells[Cl] = 15
+
+    spread = 1
+    spread = np.linspace(spread, -spread, self.num_cells)
+    self.cc_cells[M, :] = 1 + spread
+    self.cc_cells[Na, :] += spread
+
+    self.gj_len = 15e-9
+
+    self.GJ_diffusion[Na] = 1.33e-17
+    self.GJ_diffusion[K] = 1.96e-17
+    self.GJ_diffusion[M] = 1e-14
+    self.GJ_diffusion[P] = 0
+    
+    
 
   def _init_big_arrays(self, extra_ions=[]):
     """Stolen from sim.py, adapted to use as class method."""
@@ -481,6 +529,13 @@ class Planaria(Params) :
     for param in random_params :
       setattr(child1, param, getattr(other_planaria, param))
       setattr(child2, param, getattr(self, param))
+      if param =='cell_r' :
+        ## Need to recalculate these when the radius changes.
+        child1.cell_sa = (4 * math.pi * child1.cell_r ** 2)  # cell surface area
+        child1.cell_vol = ((4 / 3) * math.pi * child1.cell_r ** 3)  # cell volume
+        child2.cell_sa = (4 * math.pi * child2.cell_r ** 2)  # cell surface area
+        chidl2.cell_vol = ((4 / 3) * math.pi * child2.cell_r ** 3)  # cell volume
+        
     return child1, child2
 
 
@@ -496,7 +551,7 @@ class Planaria(Params) :
     """Calculates the fitness selection metrics from the last run of the planaria.
     """
     ## Get the Vmem difference between each adjacent cell in the planaria
-    ## Return a tuple of (max_diff, [Vmems])
+    ## Return the max_diff of the planaria
     pass
 
 
@@ -524,18 +579,25 @@ class Evolve(object) :
   """Simulates the evolution of planaria from a random start point using a genetic
   algorithm. The results are plotted in a matrix with 1 planaria per row.
   """
+  dead_threshold = 0.1
+  mutation_threshold = 0.3
 
   def __init__(self, number_of_planaria) :
     """number_of_planaria is the number of planaria to initialize.
     """
     self.num_of_planaria = number_of_planaria
+    self.max_cells = 3
     ## Call some initialization functions to set everything up.
     planaria = []
     for _ in range(number_of_planaria) :
-      planaria.append(Planaria())
-      self.planaria = planaria
-      self._open_graph()
-
+      planaria = Planaria()
+      planaria.append(planaria)
+      if planaria.num_cells > self.max_cells :
+        self.max_cells = planaria.num_cells
+        
+    self.planaria = planaria
+    ## Open and initialize the graph.
+    self._init_graph()
 
   def start(self, epochs, steps_per_mutation) :
     """Starts the evolution.
@@ -543,23 +605,25 @@ class Evolve(object) :
     steps_per_mutation is the number of steps to take before applying selection
     criteria.
     """
-    fitness = []
-    for planaria in self.planaria :
-      fit = planaria.run(steps_per_mutation)
-      fitness.append(fit)
+    while(epochs > 0) :
+      ## Perform one step.
+      epochs -= 1
+      data_list = []
+      ## Update the graph after each planaria is run for steps_per_mutation time.
+      for index, planaria in enumerate(self.planaria) :
+        data = planaria.run(steps_per_mutation)
+        self._update_graph(index, data)
+      
+      self._cull_planaria()
+      
 
-    self._update_graph()
-
-    pass
-
-
-  def _apply_mutations(self) :
+  def _apply_mutation(self, i) :
     """Chooses one or two planaria to undergo mutations.
     """
     pass
 
 
-  def _cull_planaria(self) :
+  def _cull_planaria(self, data) :
     """Gets and ranks the planaria by the selection criteria.
     The worst performing planaria are culled and replaced with cross-over mutations.
     """
@@ -570,26 +634,24 @@ class Evolve(object) :
     """Sets up and opens the window to graph the evolving lifecycle of the planaria.
     Creates an instance of the Board class.
     """
-    self.graph = Board(self.max_cells, self.max_planaria)
-    
-    pass
+    self.graph = Board(self.max_cells, self.num_of_planaria)
 
 
-  def _update_graph(self, col, data) :
+  def _update_graph(self, row, data) :
     """Updates the graph with new information.
     """
-    self.graph.update_column(col, data)
+    self.graph.update_column(row, data)
     
 
-class Board :
-  def __init__(self, max_rows, max_cols) :
+class Board(object) :
+  def __init__(self, max_cols, max_rows) :
     """Initializes the board to the given number of rows and columns.
     Rows corresponds to the maximum number of cells in any Planaria.
     Columns correspons to the number of Planaria to plot.
     """
     self.rows = max_rows
     self.cols = max_cols
-    self.board = np.zeros((max_cols, max_rows))
+    self.board = np.zeros((max_rows, max_cols))
     print(self.board)
     plt.ion()
 
@@ -601,22 +663,23 @@ class Board :
     self.figure.colorbar(self.mat, ax=self.ax)
     plt.pause(0.001)
     
-  def update_column(self, col, data) :
-    """Updates a single column in the graph to the supplied data.
+  def update_row(self, row, data) :
+    """Updates a single row in the graph to the supplied data.
     Data must be an array of values.
     """
     while len(data) < 5 :
       data.append(0)
     data = np.asarray(data)
 
-    self.board[col] = data
+    self.board[row] = data
     self.mat = self.ax.pcolormesh(self.board, **self.opts)
     plt.pause(0.001)
 
-  def resize_figure(self, rows, cols) :
+  def resize_figure(self, cols, rows) :
     """Resizes the graph to the new number of rows and cols.
     Zeros are used in all new entries. The figure can only grow in size.
     """
+    ## These rows and columns may be messed up.
     if rows >= self.rows and cols >= self.cols :
       new_board = np.zeros((cols, rows))
       for c in range(self.cols) :
@@ -627,5 +690,22 @@ class Board :
       plt.pause(0.001)
       
       
+def main(epochs, steps_per_epoch, number_of_planaria) :
+  program = Evolve(number_of_planaria)
+  program.run(epochs, steps_per_epoch)
 
+  
+if __name__ == "__main__" :
+  import sys
+  args = sys.argv
+  if len(args) == 4:
+    epochs = args[1]
+    steps_per_epoch = args[2]
+    number_of_planaria = args[3]
+  else :
+    epochs = 10
+    steps_per_epoch = 10
+    number_of_planaria = 10
+  main(epochs, steps_per_epoch, number_of_planaria)
+  
     
