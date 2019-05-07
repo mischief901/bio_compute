@@ -3,8 +3,8 @@ import numpy as np
 from numpy import random
 from copy import deepcopy
 import sim_toolbox as stb
-
-
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 
 ##testing editing with teletype/atom
@@ -132,8 +132,8 @@ class Planaria(Params) :
     self.decay_cells = np.zeros ((n_ions))
 
 
-    def register_post_hook(self, func) :
-        self.post_hook_func = func
+  def register_post_hook(self, func) :
+    self.post_hook_func = func
 
   # The main "do-it" simulation function.
   # Takes the current cc_cells[n_ions,n_cells], does all of the physics work, and
@@ -234,226 +234,225 @@ class Planaria(Params) :
   def compute_Vm(self, cc_cells, p):
       # Calculate Vmem from scratch via the charge in the cells.
     rho_cells = (cc_cells * self.z_array[:,np.newaxis]).sum(axis=0) * p.F
-      return (rho_cells * p.cell_vol / (p.cell_sa*p.cm))
+    return (rho_cells * p.cell_vol / (p.cell_sa*p.cm))
 
   def GHK(self, cc_cells, ion_index, Vm):
     num_cells = cc_cells.shape[1]
     f_ED = stb.electroflux(self.cc_env[ion_index] * np.ones(num_cells),
-                            self.cc_cells[ion_index],
-                            self.Dm_array[ion_index],
-                            GP.tm * np.ones(num_cells),
-                            self.z_array[ion_index] * np.ones(num_cells),
-                            Vm,
-                            self.GP.T,
-                            self.GP,
-                            rho=np.ones(num_cells)
-                            )
+                           self.cc_cells[ion_index],
+                           self.Dm_array[ion_index],
+                           GP.tm * np.ones(num_cells),
+                           self.z_array[ion_index] * np.ones(num_cells),
+                           Vm,
+                           self.GP.T,
+                           self.GP,
+                           rho=np.ones(num_cells))
     return (f_ED)
 
   def sim(self, end_time, p):
     # Save snapshots of core variables for plotting.
     t_shots=[]; cc_shots=[]; last_shot=-100;
-
+    
     # run the simulation loop:
     i=0; t=0
     time_step = .005
     while (t < end_time):
-        slew_cc = sim_slopes(t, self.cc_cells)
+      slew_cc = sim_slopes(t, self.cc_cells)
+      
+      # Compute Vmem slew (in Volts/s). Essentially, it's just slew_Q/C.
+      # Slew_cc is slew-flux in moles/m3 per second. We first convert to
+      # moles/(m2 of cell-membrane cross-sec area).
+      # Then sum (slew-moles * valence) to get a "slew signed moles."
+      # Finally, multiply by F to get slew-Coulombs/(m2*s), and divide by
+      # cap/m2 to get slew-Vmem/s.
+      mult = (p.cell_vol / p.cell_sa) * (p.F/ p.cm)
+      slew_Vm = (slew_cc * self.z_array[:,np.newaxis]).sum(axis=0) * mult
+      
+      # Timestep control.
+      # max_volts / (volts/sec) => max_time
+      max_t_Vm = p.sim_integ_max_delt_Vm / (np.absolute (slew_Vm).max())
+      # (moles/m3*sec) / (moles/m3) => fractional_change / sec
+      if (p.adaptive_timestep):
+        frac_cc = np.absolute(slew_cc)/(self.cc_cells+.00001)
+        max_t_cc = p.sim_integ_max_delt_cc / (frac_cc.max())
+        n_steps = max (1, int (min (max_t_Vm, max_t_cc) / time_step))
+        #print ('At t={}: max_t_Vm={}, max_t_cc={} => {} steps'.format(t, max_t_Vm, max_t_cc, n_steps))
+        #print ('steps_Vm=', (.001/(time_step*np.absolute (slew_Vm))).astype(int))
+      else:
+        n_steps = 1
 
-        # Compute Vmem slew (in Volts/s). Essentially, it's just slew_Q/C.
-        # Slew_cc is slew-flux in moles/m3 per second. We first convert to
-        # moles/(m2 of cell-membrane cross-sec area).
-        # Then sum (slew-moles * valence) to get a "slew signed moles."
-        # Finally, multiply by F to get slew-Coulombs/(m2*s), and divide by
-        # cap/m2 to get slew-Vmem/s.
-        mult = (p.cell_vol / p.cell_sa) * (p.F/ p.cm)
-        slew_Vm = (slew_cc * self.z_array[:,np.newaxis]).sum(axis=0) * mult
+      self.cc_cells +=  slew_cc * n_steps * time_step
 
-        # Timestep control.
-        # max_volts / (volts/sec) => max_time
-        max_t_Vm = p.sim_integ_max_delt_Vm / (np.absolute (slew_Vm).max())
-        # (moles/m3*sec) / (moles/m3) => fractional_change / sec
-        if (p.adaptive_timestep):
-          frac_cc = np.absolute(slew_cc)/(self.cc_cells+.00001)
-          max_t_cc = p.sim_integ_max_delt_cc / (frac_cc.max())
-          n_steps = max (1, int (min (max_t_Vm, max_t_cc) / time_step))
-          #print ('At t={}: max_t_Vm={}, max_t_cc={} => {} steps'.format(t, max_t_Vm, max_t_cc, n_steps))
-          #print ('steps_Vm=', (.001/(time_step*np.absolute (slew_Vm))).astype(int))
-        else:
-          n_steps = 1
+      # Calculate Vmem from scratch via the charge in the cells.
+      self.Vm = compute_Vm (self.cc_cells,p)
 
-        self.cc_cells +=  slew_cc * n_steps * time_step
+      # Dump out status occasionally during the simulation.
+      # Note that this may be irregular; numerical integration could, e.g.,
+      # repeatedly do i += 7; so if sim_dump_interval=10 we would rarely dump!
+      if (i % p.sim_dump_interval == 0):
+        long = (i % p.sim_long_dump_interval == 0)
+        edb.dump (t, self.cc_cells, edb.Units.mV_per_s, long) # mol_per_m2s
+        #edb.analyze_equiv_network (p)
+        #edb.dump_magic ()
 
-        # Calculate Vmem from scratch via the charge in the cells.
-        self.Vm = compute_Vm (self.cc_cells,p)
+      i += n_steps
+      t = i*time_step
 
-        # Dump out status occasionally during the simulation.
-        # Note that this may be irregular; numerical integration could, e.g.,
-        # repeatedly do i += 7; so if sim_dump_interval=10 we would rarely dump!
-        if (i % p.sim_dump_interval == 0):
-          long = (i % p.sim_long_dump_interval == 0)
-          edb.dump (t, self.cc_cells, edb.Units.mV_per_s, long) # mol_per_m2s
-          #edb.analyze_equiv_network (p)
-          #edb.dump_magic ()
-
-        i += n_steps
-        t = i*time_step
-
-        if (t>9000000):         # A hook to stop & debug during a sim.
-          edb.debug_print_GJ (p, self.cc_cells, 1)
-          import pdb; pdb.set_trace()
-          print (sim_slopes (2000, self.cc_cells))
-
-        # Save information for plotting at sample points. Early on (when things
-        # are changing quickly) save lots of info. Afterwards, save seldom so
-        # as to save memory (say 100 points before & 200 after)
-        boundary=min (50,end_time);
-        before=boundary/100; after=(end_time-boundary)/200
-        interval = (before if t<boundary else after)
-        if (t > last_shot+interval):
-          t_shots.append(t)
-          cc_shots.append(cc_cells.copy())
-          last_shot = t
+      if (t>9000000):         # A hook to stop & debug during a sim.
+        edb.debug_print_GJ (p, self.cc_cells, 1)
+        import pdb; pdb.set_trace()
+        print (sim_slopes (2000, self.cc_cells))
+        
+      # Save information for plotting at sample points. Early on (when things
+      # are changing quickly) save lots of info. Afterwards, save seldom so
+      # as to save memory (say 100 points before & 200 after)
+      boundary=min (50,end_time);
+      before=boundary/100; after=(end_time-boundary)/200
+      interval = (before if t<boundary else after)
+      if (t > last_shot+interval):
+        t_shots.append(t)
+        cc_shots.append(cc_cells.copy())
+        last_shot = t
 
     return (t_shots, cc_shots)
 
   def sim_implicit (self, end_time, p):
-      import scipy
-      #global cc_cells, Vm
-      num_ions, num_cells = self.cc_cells.shape
+    import scipy
+    #global cc_cells, Vm
+    num_ions, num_cells = self.cc_cells.shape
 
-      def wrap (t, y):
-          #global cc_cells
-          print ('----------------\nt={:.9g}'.format(t))
-          slew_cc = sim_slopes (t, y.reshape(num_ions,num_cells)) # moles/(m3*s)
-          slew_cc = slew_cc.reshape (num_ions*num_cells)
-          np.set_printoptions (formatter={'float':'{:6.2f}'.format},linewidth=120)
-          print ('y={}'.format(y))
-          np.set_printoptions (formatter={'float':'{:7.2g}'.format},linewidth=120)
-          print ('slews={}'.format(slew_cc))
-          return (slew_cc)
+    def wrap (t, y):
+      #global cc_cells
+      print ('----------------\nt={:.9g}'.format(t))
+      slew_cc = sim_slopes (t, y.reshape(num_ions,num_cells)) # moles/(m3*s)
+      slew_cc = slew_cc.reshape (num_ions*num_cells)
+      np.set_printoptions (formatter={'float':'{:6.2f}'.format},linewidth=120)
+      print ('y={}'.format(y))
+      np.set_printoptions (formatter={'float':'{:7.2g}'.format},linewidth=120)
+      print ('slews={}'.format(slew_cc))
+      return (slew_cc)
 
-      # Save information for plotting at sample points. Early on (when things
-      # are changing quickly) save lots of info. Afterwards, save seldom so
-      # as to save memory. So, 100 points in t=[0,50], then 200 in [50, end_time].
-      boundary=min (50,end_time)
-      t_eval = np.linspace (0,boundary,50,endpoint=False)
-      if (end_time>50):
-          t_eval = np.append (t_eval, np.linspace (boundary, end_time, 200))
+    # Save information for plotting at sample points. Early on (when things
+    # are changing quickly) save lots of info. Afterwards, save seldom so
+    # as to save memory. So, 100 points in t=[0,50], then 200 in [50, end_time].
+    boundary=min (50,end_time)
+    t_eval = np.linspace (0,boundary,50,endpoint=False)
+    if (end_time>50):
+      t_eval = np.append (t_eval, np.linspace (boundary, end_time, 200))
 
-      # run the simulation loop:
-      y0 = self.cc_cells.reshape (num_ions*num_cells)
-      bunch = scipy.integrate.solve_ivp (wrap, (0,end_time), y0, method='BDF', \
-                                         t_eval=t_eval)
+    # run the simulation loop:
+    y0 = self.cc_cells.reshape (num_ions*num_cells)
+    bunch = scipy.integrate.solve_ivp (wrap, (0,end_time), y0, method='BDF', \
+                                       t_eval=t_eval)
 
-      print ('{} func evals, status={} ({}), success={}'.format \
-      (bunch.nfev, bunch.status, bunch.message, bunch.success))
-      t_shots = t_eval.tolist()
-      # bunch.y is [n_ions*n_cells, n_timepoints]
-      cc_shots = [y.reshape((num_ions,num_cells)) for y in bunch.y.T]
-      self.cc_cells = cc_shots[-1]
-      return (t_shots, cc_shots)
+    print ('{} func evals, status={} ({}), success={}'.format \
+           (bunch.nfev, bunch.status, bunch.message, bunch.success))
+    t_shots = t_eval.tolist()
+    # bunch.y is [n_ions*n_cells, n_timepoints]
+    cc_shots = [y.reshape((num_ions,num_cells)) for y in bunch.y.T]
+    self.cc_cells = cc_shots[-1]
+    return (t_shots, cc_shots)
 
-    # Builds and returns a Norton equivalent model for all GJs.
-    # Specifically, two arrays GJ_Ith and GJ_Gth of [n_ions,n_GJ].
-    # Ith[i,g] is the diffusive flux of ion #i in the direction of GJ[g].from->to,
-    # and has units (mol/m2*s)
-    # Gth*(Vto-Vfrom) is the drift flux of particles in the from->to direction;
-    # Gth has units (mol/m2*s) per Volt.
-    def GJ_norton (self, p):
-        #global cc_cells
-        n_GJ = self.gj_connects.size
-        n_ions = self.cc_env.size
+  # Builds and returns a Norton equivalent model for all GJs.
+  # Specifically, two arrays GJ_Ith and GJ_Gth of [n_ions,n_GJ].
+  # Ith[i,g] is the diffusive flux of ion #i in the direction of GJ[g].from->to,
+  # and has units (mol/m2*s)
+  # Gth*(Vto-Vfrom) is the drift flux of particles in the from->to direction;
+  # Gth has units (mol/m2*s) per Volt.
+  def GJ_norton (self, p):
+    #global cc_cells
+    n_GJ = self.gj_connects.size
+    n_ions = self.cc_env.size
+    
+    GJ_Ith = np.empty ((n_ions, n_GJ))
+    GJ_Gth = np.empty ((n_ions, n_GJ))
 
-        GJ_Ith = np.empty ((n_ions, n_GJ))
-        GJ_Gth = np.empty ((n_ions, n_GJ))
+    # Compute ion drift and diffusion through GJs. Assume fixed GJ spacing
+    # of gj_len between connected cells.
+    # First, compute d_conc/dx (assume constant conc in cells, and constant
+    # gradients in the GJs).
+    GJ_from = self.gj_connects['from']       # Arrays of [n_GJ,1]
+    GJ_to   = self.gj_connects['to']
+    D_scale = self.gj_connects['scale']
+    
+    for ion_index in range(n_ions):
+      deltaC_GJ = (self.cc_cells[ion_index,GJ_to]-self.cc_cells[ion_index,GJ_from]) \
+        / p.gj_len
+      
+      # Assume that ion concentration for any ion is constant within a cell,
+      # and then transitions linearly across a GJ. Then c_ave[g] is the conc
+      # of the current ion, in the middle of GJ #g. Why do we care? Because
+      # when we compute flux = velocity * concentration, then this is the
+      # concentration that we will use (regardless of which direction the
+      # drift current is actually flowing).
+      c_avg = (self.cc_cells[ion_index,GJ_to] + self.cc_cells[ion_index,GJ_from]) / 2
 
-        # Compute ion drift and diffusion through GJs. Assume fixed GJ spacing
-        # of gj_len between connected cells.
-        # First, compute d_conc/dx (assume constant conc in cells, and constant
-        # gradients in the GJs).
-        GJ_from = self.gj_connects['from']       # Arrays of [n_GJ,1]
-        GJ_to   = self.gj_connects['to']
-        D_scale = self.gj_connects['scale']
+      # Finally, electrodiffusive gj flux:
+      # f_gj[i] is flux (moles/(m2*s)), in the direction from GJ input to
+      # output. Note that D/kT gives the drift mobility.
+      D = self.GJ_diffusion[ion_index] * self.D_scale
+      alpha = (c_avg * p.q * self.z_array[ion_index]) * (D/(p.kb*p.T*p.gj_len))
+      GJ_Ith[ion_index,:] = -D*deltaC_GJ
+      GJ_Gth[ion_index,:] = -alpha
 
-        for ion_index in range(n_ions):
-            deltaC_GJ = (self.cc_cells[ion_index,GJ_to]-self.cc_cells[ion_index,GJ_from]) \
-                        / p.gj_len
+    return (GJ_Ith, GJ_Gth)
 
-            # Assume that ion concentration for any ion is constant within a cell,
-            # and then transitions linearly across a GJ. Then c_ave[g] is the conc
-            # of the current ion, in the middle of GJ #g. Why do we care? Because
-            # when we compute flux = velocity * concentration, then this is the
-            # concentration that we will use (regardless of which direction the
-            # drift current is actually flowing).
-            c_avg = (self.cc_cells[ion_index,GJ_to] + self.cc_cells[ion_index,GJ_from]) / 2
+  # Takes an array of magic_dtype. It is either [N_CELLS] (for ion-channel
+  # magic) or [N_GJs] (for GJ magic).
+  # Returns a same-sized array of scalar scale factors in [0,1].
+  def eval_magic (self, magic_arr):
+    #global Vm
 
-            # Finally, electrodiffusive gj flux:
-            # f_gj[i] is flux (moles/(m2*s)), in the direction from GJ input to
-            # output. Note that D/kT gives the drift mobility.
-            D = self.GJ_diffusion[ion_index] * self.D_scale
-            alpha = (c_avg * p.q * self.z_array[ion_index]) * (D/(p.kb*p.T*p.gj_len))
-            GJ_Ith[ion_index,:] = -D*deltaC_GJ
-            GJ_Gth[ion_index,:] = -alpha
+    type = magic_arr['type']    # Magic_arr is a structured array; break it
+    kM   = magic_arr['kM']      # into a separate simple array for each field.
+    N    = magic_arr['N']
+    cell = magic_arr['cell']
+    ion  = magic_arr['ion']
+    cell2= magic_arr['cell2']
+    
+    # The default is type==0, which results in scale=1 (i.e., no scaling)
+    use_Vmem = np.flatnonzero (type==1) # indices of cells using Vmem
+    buf_ion  = np.flatnonzero (type==2) # Hill buffer with ions
+    Hill_ion = np.flatnonzero (type>=2) # Hill inv or buf with ions
+    
+    # Some advanced-indexing trickery for the use-ion-conc case (i.e., the
+    # channels whose input is a concentration and not Vm).
+    # Say that cells #3 and #5 are using ion concentrations. Then, using the
+    # ion[] and cell[] arrays just above,
+    #   cell #3 takes its input from ion number ion[3] (in cell number cell[3])
+    #   cell #5 takes its input from ion number ion[5] (in cell number cell[5])
+    # and we must set inps[3] = cc_cells[ion[3],cell[3]]
+    #                 inps[5] = cc_cells[ion[5],cell[5]]
+    inps  = np.empty (magic_arr.size)   # Temporary array to build inputs
+    inps[Hill_ion] = self.cc_cells[ion[Hill_ion], cell[Hill_ion]]
 
-        return (GJ_Ith, GJ_Gth)
+    # if (ligand) -> MM (kM, N, cell, ion) and 1- if needed
+    # Implement the Hill buffer or inverter function (still for use-ion-conc).
+    scale = np.ones  (magic_arr.size)   # Final array to return to the caller
+    scale[Hill_ion] = 1 / (1 + ((inps[Hill_ion]/kM[Hill_ion])**N[Hill_ion]))
+    scale[buf_ion] = 1 - scale[buf_ion]
+    
+    # And similar, but even trickier, for cells with channels that use Vmem
+    # The trick is the cell = -1 means that the cell gets Vm=0
+    # if (V) -> 1 / 1+exp(N*(v1-v2-kM))
+    V1 = np.empty(magic_arr.size)
+    V2 = np.empty(magic_arr.size)
+    V1[use_Vmem] = self.Vm[cell [use_Vmem]]
+    V2[use_Vmem] = self.Vm[cell2[use_Vmem]]
+    V1_is0V_idx = np.flatnonzero (cell ==-1) # the i such that cell[i]== -1
+    V2_is0V_idx = np.flatnonzero (cell2==-1)
+    V1[V1_is0V_idx] = 0
+    V2[V2_is0V_idx] = 0
+    inps [use_Vmem] = V1[use_Vmem] - V2[use_Vmem] - kM[use_Vmem]
+    scale[use_Vmem] = 1 / (1 + np.exp(N[use_Vmem]*inps[use_Vmem]))
+    
+    return (scale)
 
-    # Takes an array of magic_dtype. It is either [N_CELLS] (for ion-channel
-    # magic) or [N_GJs] (for GJ magic).
-    # Returns a same-sized array of scalar scale factors in [0,1].
-    def eval_magic (self, magic_arr):
-        #global Vm
+  def magic_Hill_buf (input_ion, N, kM, input_cell):
+    return ((2, kM, N, input_cell, input_ion, 0))
 
-        type = magic_arr['type']    # Magic_arr is a structured array; break it
-        kM   = magic_arr['kM']      # into a separate simple array for each field.
-        N    = magic_arr['N']
-        cell = magic_arr['cell']
-        ion  = magic_arr['ion']
-        cell2= magic_arr['cell2']
-
-        # The default is type==0, which results in scale=1 (i.e., no scaling)
-        use_Vmem = np.flatnonzero (type==1) # indices of cells using Vmem
-        buf_ion  = np.flatnonzero (type==2) # Hill buffer with ions
-        Hill_ion = np.flatnonzero (type>=2) # Hill inv or buf with ions
-
-        # Some advanced-indexing trickery for the use-ion-conc case (i.e., the
-        # channels whose input is a concentration and not Vm).
-        # Say that cells #3 and #5 are using ion concentrations. Then, using the
-        # ion[] and cell[] arrays just above,
-        #   cell #3 takes its input from ion number ion[3] (in cell number cell[3])
-        #   cell #5 takes its input from ion number ion[5] (in cell number cell[5])
-        # and we must set inps[3] = cc_cells[ion[3],cell[3]]
-        #                 inps[5] = cc_cells[ion[5],cell[5]]
-        inps  = np.empty (magic_arr.size)   # Temporary array to build inputs
-        inps[Hill_ion] = self.cc_cells[ion[Hill_ion], cell[Hill_ion]]
-
-        # if (ligand) -> MM (kM, N, cell, ion) and 1- if needed
-        # Implement the Hill buffer or inverter function (still for use-ion-conc).
-        scale = np.ones  (magic_arr.size)   # Final array to return to the caller
-        scale[Hill_ion] = 1 / (1 + ((inps[Hill_ion]/kM[Hill_ion])**N[Hill_ion]))
-        scale[buf_ion] = 1 - scale[buf_ion]
-
-        # And similar, but even trickier, for cells with channels that use Vmem
-        # The trick is the cell = -1 means that the cell gets Vm=0
-        # if (V) -> 1 / 1+exp(N*(v1-v2-kM))
-        V1 = np.empty(magic_arr.size)
-        V2 = np.empty(magic_arr.size)
-        V1[use_Vmem] = self.Vm[cell [use_Vmem]]
-        V2[use_Vmem] = self.Vm[cell2[use_Vmem]]
-        V1_is0V_idx = np.flatnonzero (cell ==-1) # the i such that cell[i]== -1
-        V2_is0V_idx = np.flatnonzero (cell2==-1)
-        V1[V1_is0V_idx] = 0
-        V2[V2_is0V_idx] = 0
-        inps [use_Vmem] = V1[use_Vmem] - V2[use_Vmem] - kM[use_Vmem]
-        scale[use_Vmem] = 1 / (1 + np.exp(N[use_Vmem]*inps[use_Vmem]))
-
-        return (scale)
-
-    def magic_Hill_buf (input_ion, N, kM, input_cell):
-        return ((2, kM, N, input_cell, input_ion, 0))
-
-    def magic_Hill_inv (input_ion, N, kM, input_cell):
-        return ((3, kM, N, input_cell, input_ion, 0))
+  def magic_Hill_inv (input_ion, N, kM, input_cell):
+    return ((3, kM, N, input_cell, input_ion, 0))
 
 
   def do_mutation(self) :
@@ -498,7 +497,6 @@ class Planaria(Params) :
     """
     ## Get the Vmem difference between each adjacent cell in the planaria
     ## Return a tuple of (max_diff, [Vmems])
-    for self.
     pass
 
 
@@ -568,14 +566,66 @@ class Evolve(object) :
     pass
 
 
-  def _open_graph(self) :
+  def _init_graph(self) :
     """Sets up and opens the window to graph the evolving lifecycle of the planaria.
-    Speculatively using pygame to display the window.
+    Creates an instance of the Board class.
     """
+    self.graph = Board(self.max_cells, self.max_planaria)
+    
     pass
 
 
-  def _update_graph(self) :
+  def _update_graph(self, col, data) :
     """Updates the graph with new information.
     """
-    pass
+    self.graph.update_column(col, data)
+    
+
+class Board :
+  def __init__(self, max_rows, max_cols) :
+    """Initializes the board to the given number of rows and columns.
+    Rows corresponds to the maximum number of cells in any Planaria.
+    Columns correspons to the number of Planaria to plot.
+    """
+    self.rows = max_rows
+    self.cols = max_cols
+    self.board = np.zeros((max_cols, max_rows))
+    print(self.board)
+    plt.ion()
+
+    colors = mcolors.Normalize(vmin=0., vmax=1.)
+    
+    self.opts = {'rasterized':True, 'cmap':'viridis', 'norm':colors}
+    self.figure, self.ax = plt.subplots(figsize=(4,4))
+    self.mat = self.ax.pcolormesh(self.board, **self.opts)
+    self.figure.colorbar(self.mat, ax=self.ax)
+    plt.pause(0.001)
+    
+  def update_column(self, col, data) :
+    """Updates a single column in the graph to the supplied data.
+    Data must be an array of values.
+    """
+    while len(data) < 5 :
+      data.append(0)
+    data = np.asarray(data)
+
+    self.board[col] = data
+    self.mat = self.ax.pcolormesh(self.board, **self.opts)
+    plt.pause(0.001)
+
+  def resize_figure(self, rows, cols) :
+    """Resizes the graph to the new number of rows and cols.
+    Zeros are used in all new entries. The figure can only grow in size.
+    """
+    if rows => self.rows and cols => self.cols :
+      new_board = np.zeros((cols, rows))
+      for c in range(self.cols) :
+        for r in range(self.rows) :
+        new_board[c][r] = self.board[c][r]
+      self.board = new_board
+      self.ax.pcolormesh(self.board, **self.opts)
+      plt.pause(0.001)
+      
+      
+
+    
