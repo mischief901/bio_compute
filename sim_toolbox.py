@@ -129,3 +129,4 @@ def pumpNaKATP(cNai,cNao,cKi,cKo,Vm,T,p,block, met = None):
 
     return f_Na, f_K, -f_Na  # FIXME get rid of this return of extra -f_Na!!
 
+
