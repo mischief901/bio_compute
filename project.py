@@ -64,7 +64,7 @@ class Planaria(Params) :
   for creating random mutations and crossovers.
   """
   ## A class variable to identify which parameters are modifiable by the algo.
-  params = ['cell_r', 'gj_len', 'kM', 'N', 'scale', 'n_cells', 'cell_grow']
+  params = ['cell_r', 'gj_len', 'kM', 'N', 'scale']#, 'n_cells', 'cell_grow']
   cell_r_range = (2e-6, 1e-5)
   gj_len_range = (50e-9, 100e-8)
   num_cells_range = (2, 20)
@@ -255,71 +255,76 @@ class Planaria(Params) :
     slew_cc = np.zeros (self.cc_cells.shape) # Per-ion cell fluxes
     # Run the Na/K-ATPase ion pump in each cell.
     # Returns two 1D arrays[N_CELLS] of fluxes; units are moles/(m2*s)
-    f_Na, f_K, _ = stb.pumpNaKATP(self.cc_cells[self.ion_i['Na']],
-                                  self.cc_env[self.ion_i['Na']],
-                                  self.cc_cells[self.ion_i['K']],
-                                  self.cc_env[self.ion_i['K']],
-                                  self.Vm,
-                                  self.T,
-                                  self,
-                                  1.0)
+    try :
+      f_Na, f_K, _ = stb.pumpNaKATP(self.cc_cells[self.ion_i['Na']],
+                                    self.cc_env[self.ion_i['Na']],
+                                    self.cc_cells[self.ion_i['K']],
+                                    self.cc_env[self.ion_i['K']],
+                                    self.Vm,
+                                    self.T,
+                                    self,
+                                    1.0)
+    except ValueError :
+      print("Error in pumpNaKATP")
+      raise(ValueError)
+    
+    finally :
+      # Kill the pumps on worm-interior cells (based on Dm=0 for all ions)
+      keep_pumps = np.any(self.Dm_array>0, 0) # array[n_cells]
+      f_Na *= keep_pumps
+      f_K  *= keep_pumps
 
-    # Kill the pumps on worm-interior cells (based on Dm=0 for all ions)
-    keep_pumps = np.any(self.Dm_array>0, 0) # array[n_cells]
-    f_Na *= keep_pumps
-    f_K  *= keep_pumps
+      # Update the cell-interior [Na] and [K] after pumping (assume env is too big
+      # to change its concentration).
+      slew_cc[self.ion_i['Na']] = f_Na
+      slew_cc[self.ion_i['K']]  = f_K
 
-    # Update the cell-interior [Na] and [K] after pumping (assume env is too big
-    # to change its concentration).
-    slew_cc[self.ion_i['Na']] = f_Na
-    slew_cc[self.ion_i['K']]  = f_K
+      # Get the gap-junction Thevenin-equivalent circuits for all ions at once.
+      # We get two arrays of [n_ions,n_GJs].
+      # Units of Ith are mol/(m2*s); units of Gth are mol/(m2*s) per Volt.
+      (GJ_Ith, GJ_Gth) = self.GJ_norton()
 
-    # Get the gap-junction Thevenin-equivalent circuits for all ions at once.
-    # We get two arrays of [n_ions,n_GJs].
-    # Units of Ith are mol/(m2*s); units of Gth are mol/(m2*s) per Volt.
-    (GJ_Ith, GJ_Gth) = self.GJ_norton()
-
-    # for each ion: (sorted to be in order 0,1,2,... rather than random)
-    for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
-      # GHK flux across membranes into the cell
-      # It returns array[N_CELLS] of moles/(m2*s)
+      # for each ion: (sorted to be in order 0,1,2,... rather than random)
+      for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
+        # GHK flux across membranes into the cell
+        # It returns array[N_CELLS] of moles/(m2*s)
         f_ED = self.GHK(ion_index)
         f_ED *= self.eval_magic(self.ion_magic[ion_index,:])
         slew_cc[ion_index] += f_ED
 
-    # Gap-junction computations. Note the units of the Thevenin-equivalent
-    # circuits; the "Ithev" is actually moles/(m2*s), just like f_gj.
-    # These arrays are all [n_GJ].
-    deltaV_GJ = (self.Vm[self.gj_connects['to']] - self.Vm[self.gj_connects['from']])
-    f_gj = GJ_Ith + deltaV_GJ*GJ_Gth
+      # Gap-junction computations. Note the units of the Thevenin-equivalent
+      # circuits; the "Ithev" is actually moles/(m2*s), just like f_gj.
+      # These arrays are all [n_GJ].
+      deltaV_GJ = (self.Vm[self.gj_connects['to']] - self.Vm[self.gj_connects['from']])
+      f_gj = GJ_Ith + deltaV_GJ*GJ_Gth
 
-    magic = self.eval_magic(self.GJ_magic)
-    f_gj *= magic
+      magic = self.eval_magic(self.GJ_magic)
+      f_gj *= magic
 
-    # Update cells with gj flux:
-    # Note that the simple slew_cc[ion_index, gj_connects['to']] += f_gj
-    # doesn't actually work in the case of two GJs driving the same 'to'
-    # cell. Instead, we use np.add.at().
-    for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
+      # Update cells with gj flux:
+      # Note that the simple slew_cc[ion_index, gj_connects['to']] += f_gj
+      # doesn't actually work in the case of two GJs driving the same 'to'
+      # cell. Instead, we use np.add.at().
+      for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
         np.add.at(slew_cc[ion_index,:], self.gj_connects['from'], -f_gj[ion_index])
         np.add.at(slew_cc[ion_index,:], self.gj_connects['to'],    f_gj[ion_index])
 
-    # The current slew_cc units are moles/(m2*s), where the m2 is m2 of
-    # cell-membrane area. To convert to moles/s entering the cell, we multiply
-    # by the cell's surface area. Then, to convert to moles/m3 per s entering
-    # the cell, we divide by the cell volume.
-    slew_cc *= (self.cell_sa / self.cell_vol)
+      # The current slew_cc units are moles/(m2*s), where the m2 is m2 of
+      # cell-membrane area. To convert to moles/s entering the cell, we multiply
+      # by the cell's surface area. Then, to convert to moles/m3 per s entering
+      # the cell, we divide by the cell volume.
+      slew_cc *= (self.cell_sa / self.cell_vol)
 
-    # Next, do generation and decay.
-    for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
-      gen = self.gen_cells[ion_index,:] * self.eval_magic(self.gen_magic[ion_index,:])
-      decay = self.cc_cells[ion_index,:] * self.decay_cells[ion_index]
-      slew_cc[ion_index] += gen - decay
+      # Next, do generation and decay.
+      for ion_name,ion_index in sorted(self.ion_i.items(),key=operator.itemgetter(1)):
+        gen = self.gen_cells[ion_index,:] * self.eval_magic(self.gen_magic[ion_index,:])
+        decay = self.cc_cells[ion_index,:] * self.decay_cells[ion_index]
+        slew_cc[ion_index] += gen - decay
 
-    if (self.post_hook_func != None):
-      self.post_hook_func(t, self, cc_cells, slew_cc)
+      if (self.post_hook_func != None):
+        self.post_hook_func(t, self, cc_cells, slew_cc)
 
-    return slew_cc    # Moles/m3 per second.
+      return slew_cc    # Moles/m3 per second.
 
   # Given: per-cell, per-ion charges in moles/m3.
   # First: sum them per-cell, scaled by valence to get "signed-moles/m3"
@@ -353,45 +358,55 @@ class Planaria(Params) :
     def wrap (t, y):
       #global cc_cells
       #print ('----------------\nt={:.9g}'.format(t))
-      cc = self.cc_cells
+      cc = deepcopy(self.cc_cells)
       self.cc_cells = y.reshape(num_ions, num_cells)
       np.nan_to_num(self.cc_cells, copy=False)
-      slew_cc = self.sim_slopes(t) # moles/(m3*s)
-      #print(slew_cc)
-      slew_cc = slew_cc.reshape(num_ions*num_cells)
-      #np.set_printoptions (formatter={'float':'{:6.2f}'.format},linewidth=120)
-      #print ('y={}'.format(y))
-      #np.set_printoptions (formatter={'float':'{:7.2g}'.format},linewidth=120)
-      #print ('slews={}'.format(slew_cc))
-      #print(slew_cc)
+      try :
+        slew_cc = self.sim_slopes(t) # moles/(m3*s)
       
-      np.nan_to_num(slew_cc, copy=False)
-      self.cc_cells = cc
-      return slew_cc
+        #print(slew_cc)
+        slew_cc = slew_cc.reshape(num_ions*num_cells)
+        #np.set_printoptions (formatter={'float':'{:6.2f}'.format},linewidth=120)
+        #print ('y={}'.format(y))
+        #np.set_printoptions (formatter={'float':'{:7.2g}'.format},linewidth=120)
+        #print ('slews={}'.format(slew_cc))
+        #print(slew_cc)
+      
+        np.nan_to_num(slew_cc, copy=False)
+        self.cc_cells = cc
+        np.nan_to_num(self.cc_cells, copy=False)
+        return slew_cc
+      except ValueError :
+        print("Error in Wrap Function")
+        return
 
+      
     # Save information for plotting at sample points. Early on (when things
     # are changing quickly) save lots of info. Afterwards, save seldom so
     # as to save memory. So, 100 points in t=[0,50], then 200 in [50, end_time].
-    boundary=min(50,end_time)
-    t_eval = np.linspace(0,boundary,50,endpoint=False)
-    if (end_time>50):
-      t_eval = np.append(t_eval, np.linspace (boundary, end_time, 200))
+    #boundary=min(50,end_time)
+    #t_eval = np.linspace(0,boundary,50,endpoint=False)
+    #if (end_time>50):
+      #t_eval = np.append(t_eval, np.linspace (boundary, end_time, 200))
 
     # run the simulation loop:
     y0 = self.cc_cells.reshape(num_ions*num_cells)
     #print(y0)
     #print(t_eval)
-    
-    bunch = scipy.integrate.solve_ivp(wrap, (0, end_time), y0, method='BDF', \
-                                      t_eval=t_eval)
-
-    #print ('{} func evals, status={} ({}), success={}'.format \
-    #       (bunch.nfev, bunch.status, bunch.message, bunch.success))
-    t_shots = t_eval.tolist()
-    # bunch.y is [n_ions*n_cells, n_timepoints]
-    cc_shots = [y.reshape((num_ions,num_cells)) for y in bunch.y.T]
-    self.cc_cells = cc_shots[-1]
-    return (t_shots, cc_shots)
+    np.nan_to_num(y0, copy=False)
+    try:     
+      bunch = scipy.integrate.solve_ivp(wrap, (0, end_time), y0, method='BDF')#,
+                                        #t_eval=t_eval)
+    except ValueError :
+      print("Error integrating: ", y0)
+      return
+      #print ('{} func evals, status={} ({}), success={}'.format \
+        #       (bunch.nfev, bunch.status, bunch.message, bunch.success))
+      #t_shots = t_eval.tolist()
+      # bunch.y is [n_ions*n_cells, n_timepoints]
+    self.cc_shots = [y.reshape((num_ions,num_cells)) for y in bunch.y.T]
+    self.cc_cells = self.cc_shots[-1]
+    #return (t_shots, cc_shots)
 
   # Builds and returns a Norton equivalent model for all GJs.
   # Specifically, two arrays GJ_Ith and GJ_Gth of [n_ions,n_GJ].
@@ -548,8 +563,8 @@ class Planaria(Params) :
     """Runs the model for time_steps number of iterations. Calculates and returns
     the fitness selection metric.
     """
-    print(time_steps)
-    self.t_shots, self.cc_shots = self.sim_implicit(time_steps)
+    #print(time_steps)
+    self.sim_implicit(time_steps)
     self.vm = self.compute_Vm()
     return self.vm
 
@@ -620,7 +635,6 @@ class Evolve(object) :
       ## Update the graph after each planaria is run for steps_per_mutation time.
       for index, planaria in enumerate(self.planaria_list) :
         if planaria.n_cells > self.max_cells :
-          print(planaria.n_cells)
           self.max_cells = planaria.n_cells
           self._resize_graph(self.max_cells)
         
@@ -668,8 +682,8 @@ class Evolve(object) :
       planaria_rank_list.append((i, planaria_fit))
     
     planaria_rank_list.sort(key=lambda x: x[1])
-    n = (len(planaria_rank_list))//2
-    good_list = planaria_rank_list[n:]
+    n = (len(planaria_rank_list))//10
+    good_list = planaria_rank_list[-n:]
     bad_list = planaria_rank_list[:n]
     return (good_list, bad_list)
     
