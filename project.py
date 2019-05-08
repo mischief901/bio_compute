@@ -64,10 +64,10 @@ class Planaria(Params) :
   for creating random mutations and crossovers.
   """
   ## A class variable to identify which parameters are modifiable by the algo.
-  params = ['cell_r', 'gj_len', 'n_cells', 'kM', 'N', 'scale', 'cell_grow']
+  params = ['cell_r', 'gj_len', 'kM', 'N', 'scale', 'n_cells', 'cell_grow']
   cell_r_range = (2e-6, 1e-5)
   gj_len_range = (50e-9, 100e-8)
-  num_cells_range = (2, 5)
+  num_cells_range = (2, 20)
   kM_range = (0.2, 2)
   N_range = (1, 20)
   scale_range = (0.1, 0.5)
@@ -79,8 +79,6 @@ class Planaria(Params) :
     Params.__init__(self)
     self.n_cells = np.random.randint(*self.num_cells_range)
     self.n_GJs = self.n_cells - 1
-    print(self.n_cells)
-    print(self.n_GJs)
     
     self.cell_r = get_random(self.cell_r_range)
     self.gj_len = get_random(self.gj_len_range)
@@ -137,7 +135,6 @@ class Planaria(Params) :
     self.GJ_diffusion[self.P] = 0
     
     self.Vm = self.compute_Vm()
-    print(self.Vm)
 
     
   def _init_big_arrays(self, extra_ions=[]):
@@ -192,7 +189,47 @@ class Planaria(Params) :
     self.gen_cells   = np.zeros ((n_ions, self.n_cells))
     self.decay_cells = np.zeros ((n_ions))
 
+  def resize_params(self) :
+    
+    (f, i) = self.cc_cells.shape
+    self.n_GJs = self.n_cells - 1
+    # Re-Initialize the magic arrays to their default no-magic state with a new cell.
+    magic_dtype=np.dtype ([('type','i4'),('kM','f4'), ('N','f4'), \
+                           ('cell','i4'), ('ion','i4'), ('cell2','i4')])
+    x, _ = self.ion_magic.shape
+    ## Only need to change the number of cells/gap junctions.
+    ion_magic = np.zeros ((x, self.n_cells), dtype=magic_dtype)
+    #print(self.GJ_magic.shape)
+    GJ_magic  = np.zeros ((self.n_GJs), dtype=magic_dtype)
+    #print(GJ_magic.shape)
+    gen_magic = np.zeros ((x, self.n_cells), dtype=magic_dtype)
+    diff = abs(i - self.n_cells)
+    new_cc = np.zeros((f, i + diff))
+    new_Dm = np.zeros((f, i + diff))
+    for f in range(f) :
+      for i in range(i) :
+        new_cc[f][i] = self.cc_cells[f][i]
+        new_Dm[f][i] = self.Dm_array[f][i]
+        ion_magic[f][i] = self.ion_magic[f][i]
+        gen_magic[f][i] = self.gen_magic[f][i]
+    print(self.GJ_magic.shape)
+    g, = self.GJ_magic.shape
+    
+    for g in range(g) :
+      GJ_magic[g] = self.GJ_magic[g]
 
+    self.cc_cells = new_cc
+    self.Dm_array = new_Dm
+    self.ion_magic = ion_magic
+    self.GJ_magic = GJ_magic
+    self.gen_magic = gen_magic
+
+    # Create default arrays for GJs, and for generation, decay rates.
+    self.gj_connects=np.zeros((self.n_GJs), dtype=[('from','i4'),('to','i4'),('scale','f4')])
+    x, _ = self.gen_cells.shape
+    self.gen_cells   = np.zeros((x, self.n_cells))
+    self.Vm = self.compute_Vm()
+    
   def register_post_hook(self, func) :
     self.post_hook_func = func
 
@@ -216,7 +253,6 @@ class Planaria(Params) :
     # be scaled down by the fraction of membrane area occupied by channels.
     # The same goes for ion pumps and GJs.
     slew_cc = np.zeros (self.cc_cells.shape) # Per-ion cell fluxes
-
     # Run the Na/K-ATPase ion pump in each cell.
     # Returns two 1D arrays[N_CELLS] of fluxes; units are moles/(m2*s)
     f_Na, f_K, _ = stb.pumpNaKATP(self.cc_cells[self.ion_i['Na']],
@@ -229,7 +265,7 @@ class Planaria(Params) :
                                   1.0)
 
     # Kill the pumps on worm-interior cells (based on Dm=0 for all ions)
-    keep_pumps = np.any (self.Dm_array>0, 0) # array[n_cells]
+    keep_pumps = np.any(self.Dm_array>0, 0) # array[n_cells]
     f_Na *= keep_pumps
     f_K  *= keep_pumps
 
@@ -285,14 +321,14 @@ class Planaria(Params) :
 
     return slew_cc    # Moles/m3 per second.
 
-# Given: per-cell, per-ion charges in moles/m3.
-# First: sum them per-cell, scaled by valence to get "signed-moles/m3"
-# Next: multiply by F to convert moles->coulombs. Multiply by cell volume/
-# surface area to get coulombs/m2, and finally divide by Farads/m2.
-# The final scaling factor is F * p.cell_vol / (p.cell_sa*p.cm),
-# or about 3200 mV per (mol/m3)
+  # Given: per-cell, per-ion charges in moles/m3.
+  # First: sum them per-cell, scaled by valence to get "signed-moles/m3"
+  # Next: multiply by F to convert moles->coulombs. Multiply by cell volume/
+  # surface area to get coulombs/m2, and finally divide by Farads/m2.
+  # The final scaling factor is F * p.cell_vol / (p.cell_sa*p.cm),
+  # or about 3200 mV per (mol/m3)
   def compute_Vm(self):
-      # Calculate Vmem from scratch via the charge in the cells.
+    # Calculate Vmem from scratch via the charge in the cells.
     rho_cells = (self.cc_cells * self.z_array[:,np.newaxis]).sum(axis=0) * self.F
     return (rho_cells * self.cell_vol / (self.cell_sa*self.cm))
 
@@ -309,83 +345,29 @@ class Planaria(Params) :
                            rho=np.ones(num_cells))
     return (f_ED)
 
-  def sim(self, end_time):
-    # Save snapshots of core variables for plotting.
-    t_shots=[]; cc_shots=[]; last_shot=-100;
-    
-    # run the simulation loop:
-    i=0; t=0
-    time_step = .005
-    while (t < end_time):
-      slew_cc = self.sim_slopes(t)
-      
-      # Compute Vmem slew (in Volts/s). Essentially, it's just slew_Q/C.
-      # Slew_cc is slew-flux in moles/m3 per second. We first convert to
-      # moles/(m2 of cell-membrane cross-sec area).
-      # Then sum (slew-moles * valence) to get a "slew signed moles."
-      # Finally, multiply by F to get slew-Coulombs/(m2*s), and divide by
-      # cap/m2 to get slew-Vmem/s.
-      mult = (self.cell_vol / self.cell_sa) * (self.F/ self.cm)
-      slew_Vm = (slew_cc * self.z_array[:,np.newaxis]).sum(axis=0) * mult
-      
-      # Timestep control.
-      # max_volts / (volts/sec) => max_time
-      max_t_Vm = self.sim_integ_max_delt_Vm / (np.absolute (slew_Vm).max())
-      # (moles/m3*sec) / (moles/m3) => fractional_change / sec
-      if (self.adaptive_timestep):
-        frac_cc = np.absolute(slew_cc)/(self.cc_cells+.00001)
-        max_t_cc = self.sim_integ_max_delt_cc / (frac_cc.max())
-        n_steps = max (1, int (min (max_t_Vm, max_t_cc) / time_step))
-        #print ('At t={}: max_t_Vm={}, max_t_cc={} => {} steps'.format(t, max_t_Vm, max_t_cc, n_steps))
-        #print ('steps_Vm=', (.001/(time_step*np.absolute (slew_Vm))).astype(int))
-      else:
-        n_steps = 1
-
-      self.cc_cells +=  slew_cc * n_steps * time_step
-
-      # Calculate Vmem from scratch via the charge in the cells.
-      self.Vm = self.compute_Vm()
-
-      # Dump out status occasionally during the simulation.
-      # Note that this may be irregular; numerical integration could, e.g.,
-      # repeatedly do i += 7; so if sim_dump_interval=10 we would rarely dump!
-      #if (i % self.sim_dump_interval == 0):
-        #long = (i % self.sim_long_dump_interval == 0)
-        #edb.dump (t, self.cc_cells, edb.Units.mV_per_s, long) # mol_per_m2s
-        #edb.analyze_equiv_network (p)
-        #edb.dump_magic ()
-
-      i += n_steps
-      t = i*time_step
-
-      # Save information for plotting at sample points. Early on (when things
-      # are changing quickly) save lots of info. Afterwards, save seldom so
-      # as to save memory (say 100 points before & 200 after)
-      boundary=min (50,end_time);
-      before=boundary/100; after=(end_time-boundary)/200
-      interval = (before if t<boundary else after)
-      if (t > last_shot+interval):
-        t_shots.append(t)
-        cc_shots.append(self.cc_cells.copy())
-        last_shot = t
-
-    return (t_shots, cc_shots)
-
   def sim_implicit(self, end_time):
     import scipy
     #global cc_cells, Vm
     num_ions, num_cells = self.cc_cells.shape
-
+    
     def wrap (t, y):
       #global cc_cells
-      print ('----------------\nt={:.9g}'.format(t))
-      slew_cc = self.sim_slopes(t)#, y.reshape(num_ions, num_cells)) # moles/(m3*s)
+      #print ('----------------\nt={:.9g}'.format(t))
+      cc = self.cc_cells
+      self.cc_cells = y.reshape(num_ions, num_cells)
+      np.nan_to_num(self.cc_cells, copy=False)
+      slew_cc = self.sim_slopes(t) # moles/(m3*s)
+      #print(slew_cc)
       slew_cc = slew_cc.reshape(num_ions*num_cells)
-      np.set_printoptions (formatter={'float':'{:6.2f}'.format},linewidth=120)
-      print ('y={}'.format(y))
-      np.set_printoptions (formatter={'float':'{:7.2g}'.format},linewidth=120)
-      print ('slews={}'.format(slew_cc))
-      return (slew_cc)
+      #np.set_printoptions (formatter={'float':'{:6.2f}'.format},linewidth=120)
+      #print ('y={}'.format(y))
+      #np.set_printoptions (formatter={'float':'{:7.2g}'.format},linewidth=120)
+      #print ('slews={}'.format(slew_cc))
+      #print(slew_cc)
+      
+      np.nan_to_num(slew_cc, copy=False)
+      self.cc_cells = cc
+      return slew_cc
 
     # Save information for plotting at sample points. Early on (when things
     # are changing quickly) save lots of info. Afterwards, save seldom so
@@ -397,11 +379,14 @@ class Planaria(Params) :
 
     # run the simulation loop:
     y0 = self.cc_cells.reshape(num_ions*num_cells)
+    #print(y0)
+    #print(t_eval)
+    
     bunch = scipy.integrate.solve_ivp(wrap, (0, end_time), y0, method='BDF', \
                                       t_eval=t_eval)
 
-    print ('{} func evals, status={} ({}), success={}'.format \
-           (bunch.nfev, bunch.status, bunch.message, bunch.success))
+    #print ('{} func evals, status={} ({}), success={}'.format \
+    #       (bunch.nfev, bunch.status, bunch.message, bunch.success))
     t_shots = t_eval.tolist()
     # bunch.y is [n_ions*n_cells, n_timepoints]
     cc_shots = [y.reshape((num_ions,num_cells)) for y in bunch.y.T]
@@ -517,13 +502,18 @@ class Planaria(Params) :
     """
     random_params = self._get_random_params()
     for param in random_params :
+      print(param)
       factor = get_random((0.5, 2))
-      if param =='cell_grow' :
+      if param =='cell_grow':
         print("Growing")
         x = getattr(self, 'n_cells')
         setattr(self, 'n_cells', x + 1)
+        self.resize_params()
         return
       x = getattr(self, param)
+      if param == 'n_cells' :
+        setattr(self, param, int(x * factor))
+        return
       setattr(self, param, x * factor)
       if param == 'cell_r' :
         ## Need to recalculate these when the radius changes.
@@ -558,7 +548,8 @@ class Planaria(Params) :
     """Runs the model for time_steps number of iterations. Calculates and returns
     the fitness selection metric.
     """
-    self.t_shots, self.cc_shots = self.sim(time_steps)
+    print(time_steps)
+    self.t_shots, self.cc_shots = self.sim_implicit(time_steps)
     self.vm = self.compute_Vm()
     return self.vm
 
@@ -629,6 +620,7 @@ class Evolve(object) :
       ## Update the graph after each planaria is run for steps_per_mutation time.
       for index, planaria in enumerate(self.planaria_list) :
         if planaria.n_cells > self.max_cells :
+          print(planaria.n_cells)
           self.max_cells = planaria.n_cells
           self._resize_graph(self.max_cells)
         
